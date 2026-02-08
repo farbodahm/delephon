@@ -31,13 +31,12 @@ func main() {
 
 	window.SetContent(application.BuildUI())
 
-	// Load projects in background
-	application.LoadProjects()
+	// Load favorites + recent projects from local DB (no GCP API call)
+	application.LoadInitialProjects()
 
-	// Load history, favorites, and favorite projects from local DB
+	// Load history and favorites from local DB
 	go application.refreshHistory()
 	go application.refreshFavorites()
-	go application.refreshFavProjects()
 
 	window.ShowAndRun()
 }

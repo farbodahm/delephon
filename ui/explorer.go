@@ -49,34 +49,68 @@ type OnTableSelectedFunc func(project, dataset, table string)
 type explorerNode struct {
 	id       string
 	label    string
-	depth    int  // 0=project, 1=dataset, 2=table
+	depth    int  // 0=project/header, 1=dataset, 2=table
 	isBranch bool
 	expanded bool
+	isHeader bool // section header (non-clickable for expand, but "All Projects" is clickable to load)
 }
 
+const (
+	headerFavorites = "header:favorites"
+	headerRecent    = "header:recent"
+	headerAll       = "header:all"
+)
+
 type Explorer struct {
-	list *widget.List
+	list        *widget.List
+	searchEntry *widget.Entry
 
 	mu       sync.Mutex
 	visible  []explorerNode            // flat list of currently visible nodes
 	children map[string][]explorerNode // parent id -> loaded children
 	loading  map[string]bool
 
-	LoadChildren    LoadChildrenFunc
-	OnTableSelected OnTableSelectedFunc
+	// Data sources
+	favProjects    []string // starred projects
+	recentProjects []string // from history
+	allProjects    []string // from GCP API (nil until loaded)
+	allLoaded      bool     // whether "All Projects" has been fetched
 
-	// Favorite projects
-	favList     *widget.List
-	favProjects []string
-	OnFavSelected func(project string)
+	// Section collapsed state
+	favExpanded    bool
+	recentExpanded bool
+	allExpanded    bool
+
+	searchFilter string // current search text
+
+	LoadChildren       LoadChildrenFunc
+	OnTableSelected    OnTableSelectedFunc
+	OnLoadAllProjects  func()                // callback to load all projects from GCP
+	OnProjectSelected  func(project string)  // callback when a project node is clicked (set in editor)
 
 	Container fyne.CanvasObject
 }
 
 func NewExplorer() *Explorer {
 	e := &Explorer{
-		children: make(map[string][]explorerNode),
-		loading:  make(map[string]bool),
+		children:       make(map[string][]explorerNode),
+		loading:        make(map[string]bool),
+		favExpanded:    true,
+		recentExpanded: true,
+		allExpanded:    false,
+	}
+
+	e.searchEntry = widget.NewEntry()
+	e.searchEntry.SetPlaceHolder("Filter projects...")
+	e.searchEntry.OnChanged = func(text string) {
+		e.mu.Lock()
+		e.searchFilter = text
+		shouldLoad := text != "" && !e.allLoaded
+		e.mu.Unlock()
+		if shouldLoad && e.OnLoadAllProjects != nil {
+			e.OnLoadAllProjects()
+		}
+		e.rebuildVisible()
 	}
 
 	e.list = widget.NewList(
@@ -86,7 +120,7 @@ func NewExplorer() *Explorer {
 			return len(e.visible)
 		},
 		func() fyne.CanvasObject {
-			spacer := widget.NewLabel("")        // used for indentation width
+			spacer := widget.NewLabel("")
 			icon := widget.NewIcon(theme.NavigateNextIcon())
 			label := widget.NewLabel("template")
 			return container.NewHBox(spacer, icon, label)
@@ -105,14 +139,28 @@ func NewExplorer() *Explorer {
 			icon := box.Objects[1].(*widget.Icon)
 			label := box.Objects[2].(*widget.Label)
 
-			// Indentation: repeat spaces based on depth
+			// Indentation
 			indent := ""
 			for i := 0; i < node.depth; i++ {
 				indent += "    "
 			}
 			spacer.SetText(indent)
 
+			if node.isHeader {
+				label.SetText(node.label)
+				label.TextStyle = fyne.TextStyle{Bold: true}
+				label.Refresh()
+				if node.expanded {
+					icon.SetResource(theme.MoveDownIcon())
+				} else {
+					icon.SetResource(theme.NavigateNextIcon())
+				}
+				return
+			}
+
 			label.SetText(node.label)
+			label.TextStyle = fyne.TextStyle{}
+			label.Refresh()
 
 			if node.isBranch {
 				if node.expanded {
@@ -136,7 +184,41 @@ func NewExplorer() *Explorer {
 		node := e.visible[id]
 		e.mu.Unlock()
 
+		if node.isHeader {
+			switch node.id {
+			case headerFavorites:
+				e.mu.Lock()
+				e.favExpanded = !e.favExpanded
+				e.mu.Unlock()
+				e.rebuildVisible()
+			case headerRecent:
+				e.mu.Lock()
+				e.recentExpanded = !e.recentExpanded
+				e.mu.Unlock()
+				e.rebuildVisible()
+			case headerAll:
+				e.mu.Lock()
+				if !e.allLoaded {
+					e.allExpanded = true
+					e.mu.Unlock()
+					if e.OnLoadAllProjects != nil {
+						e.OnLoadAllProjects()
+					}
+				} else {
+					e.allExpanded = !e.allExpanded
+					e.mu.Unlock()
+					e.rebuildVisible()
+				}
+			}
+			return
+		}
+
 		if node.isBranch {
+			// If it's a project node, also notify project selection
+			kind, project, _, _ := ParseNodeID(node.id)
+			if kind == "p" && e.OnProjectSelected != nil {
+				e.OnProjectSelected(project)
+			}
 			e.toggleBranch(node.id)
 		} else {
 			kind, project, dataset, table := ParseNodeID(node.id)
@@ -146,93 +228,253 @@ func NewExplorer() *Explorer {
 		}
 	}
 
-	// Favorite projects list
-	e.favList = widget.NewList(
-		func() int {
-			e.mu.Lock()
-			defer e.mu.Unlock()
-			return len(e.favProjects)
-		},
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			e.mu.Lock()
-			if id < len(e.favProjects) {
-				obj.(*widget.Label).SetText(e.favProjects[id])
-			}
-			e.mu.Unlock()
-		},
-	)
-	e.favList.OnSelected = func(id widget.ListItemID) {
-		e.mu.Lock()
-		if id < len(e.favProjects) {
-			p := e.favProjects[id]
-			e.mu.Unlock()
-			if e.OnFavSelected != nil {
-				e.OnFavSelected(p)
-			}
-		} else {
-			e.mu.Unlock()
-		}
-		e.favList.UnselectAll()
-	}
-
-	favLabel := widget.NewLabel("Favorite Projects")
-	favLabel.TextStyle = fyne.TextStyle{Bold: true}
-	favSection := container.NewBorder(favLabel, nil, nil, nil, e.favList)
-
-	split := container.NewVSplit(e.list, favSection)
-	split.Offset = 0.7
-	e.Container = split
+	e.Container = container.NewBorder(e.searchEntry, nil, nil, nil, e.list)
 
 	return e
 }
 
-func (e *Explorer) SetProjects(projects []string) {
+// rebuildVisible reconstructs the visible list from the three data sources,
+// applying search filter. Must NOT hold e.mu when calling.
+func (e *Explorer) rebuildVisible() {
 	e.mu.Lock()
-	e.visible = nil
-	for _, p := range projects {
-		e.visible = append(e.visible, explorerNode{
-			id:       ProjectNodeID(p),
-			label:    p,
-			depth:    0,
-			isBranch: true,
-		})
-	}
-	e.mu.Unlock()
-	fyne.Do(func() { e.list.Refresh() })
-}
 
-func (e *Explorer) AddProject(project string) {
-	e.mu.Lock()
-	id := ProjectNodeID(project)
+	filter := strings.ToLower(e.searchFilter)
+
+	// Save expanded states and children so we can preserve them
+	expandedSet := make(map[string]bool)
 	for _, n := range e.visible {
-		if n.id == id {
-			e.mu.Unlock()
-			return
+		if n.expanded {
+			expandedSet[n.id] = true
 		}
 	}
-	e.visible = append(e.visible, explorerNode{
-		id:       id,
-		label:    project,
-		depth:    0,
-		isBranch: true,
-	})
-	// Sort projects
-	sort.Slice(e.visible, func(i, j int) bool {
-		if e.visible[i].depth != e.visible[j].depth {
-			return false // don't re-sort nested items
+
+	var nodes []explorerNode
+
+	if filter != "" {
+		// Search mode: flat list of all matching projects
+		seen := make(map[string]bool)
+		var matches []string
+
+		for _, p := range e.favProjects {
+			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
+				seen[p] = true
+				matches = append(matches, p)
+			}
 		}
-		return e.visible[i].label < e.visible[j].label
-	})
+		for _, p := range e.recentProjects {
+			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
+				seen[p] = true
+				matches = append(matches, p)
+			}
+		}
+		for _, p := range e.allProjects {
+			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
+				seen[p] = true
+				matches = append(matches, p)
+			}
+		}
+
+		for _, p := range matches {
+			nid := ProjectNodeID(p)
+			node := explorerNode{
+				id:       nid,
+				label:    p,
+				depth:    0,
+				isBranch: true,
+				expanded: expandedSet[nid],
+			}
+			nodes = append(nodes, node)
+			if node.expanded {
+				if cached, ok := e.children[nid]; ok {
+					nodes = e.appendExpandedChildren(nodes, nid, cached, expandedSet)
+				}
+			}
+		}
+	} else {
+		// Section mode
+		// Favorites section
+		if len(e.favProjects) > 0 {
+			nodes = append(nodes, explorerNode{
+				id:       headerFavorites,
+				label:    "\u2605 Favorite Projects",
+				isHeader: true,
+				expanded: e.favExpanded,
+			})
+			if e.favExpanded {
+				for _, p := range e.favProjects {
+					nid := ProjectNodeID(p)
+					node := explorerNode{
+						id:       nid,
+						label:    p,
+						depth:    0,
+						isBranch: true,
+						expanded: expandedSet[nid],
+					}
+					nodes = append(nodes, node)
+					if node.expanded {
+						if cached, ok := e.children[nid]; ok {
+							nodes = e.appendExpandedChildren(nodes, nid, cached, expandedSet)
+						}
+					}
+				}
+			}
+		}
+
+		// Recent section
+		if len(e.recentProjects) > 0 {
+			nodes = append(nodes, explorerNode{
+				id:       headerRecent,
+				label:    "\u23F1 Recent Projects",
+				isHeader: true,
+				expanded: e.recentExpanded,
+			})
+			if e.recentExpanded {
+				for _, p := range e.recentProjects {
+					nid := ProjectNodeID(p)
+					node := explorerNode{
+						id:       nid,
+						label:    p,
+						depth:    0,
+						isBranch: true,
+						expanded: expandedSet[nid],
+					}
+					nodes = append(nodes, node)
+					if node.expanded {
+						if cached, ok := e.children[nid]; ok {
+							nodes = e.appendExpandedChildren(nodes, nid, cached, expandedSet)
+						}
+					}
+				}
+			}
+		}
+
+		// All Projects section
+		allLabel := "All Projects"
+		if !e.allLoaded {
+			allLabel = "All Projects (click to load)"
+		}
+		nodes = append(nodes, explorerNode{
+			id:       headerAll,
+			label:    allLabel,
+			isHeader: true,
+			expanded: e.allExpanded,
+		})
+		if e.allExpanded && e.allLoaded {
+			for _, p := range e.allProjects {
+				nid := ProjectNodeID(p)
+				node := explorerNode{
+					id:       nid,
+					label:    p,
+					depth:    0,
+					isBranch: true,
+					expanded: expandedSet[nid],
+				}
+				nodes = append(nodes, node)
+				if node.expanded {
+					if cached, ok := e.children[nid]; ok {
+						nodes = e.appendExpandedChildren(nodes, nid, cached, expandedSet)
+					}
+				}
+			}
+		}
+	}
+
+	e.visible = nodes
 	e.mu.Unlock()
 	fyne.Do(func() { e.list.Refresh() })
 }
 
+// appendExpandedChildren recursively adds cached children (and their children) to the node list.
+// Must be called with e.mu held.
+func (e *Explorer) appendExpandedChildren(nodes []explorerNode, parentID string, childNodes []explorerNode, expandedSet map[string]bool) []explorerNode {
+	for _, c := range childNodes {
+		c.expanded = expandedSet[c.id]
+		nodes = append(nodes, c)
+		if c.expanded {
+			if cached, ok := e.children[c.id]; ok {
+				nodes = e.appendExpandedChildren(nodes, c.id, cached, expandedSet)
+			}
+		}
+	}
+	return nodes
+}
+
+// SetFavProjects updates the favorite projects list.
 func (e *Explorer) SetFavProjects(projects []string) {
 	e.mu.Lock()
 	e.favProjects = projects
 	e.mu.Unlock()
-	fyne.Do(func() { e.favList.Refresh() })
+	e.rebuildVisible()
+}
+
+// SetRecentProjects updates the recent projects list.
+func (e *Explorer) SetRecentProjects(projects []string) {
+	e.mu.Lock()
+	e.recentProjects = projects
+	e.mu.Unlock()
+	e.rebuildVisible()
+}
+
+// SetAllProjects sets the full project list from GCP.
+func (e *Explorer) SetAllProjects(projects []string) {
+	e.mu.Lock()
+	e.allProjects = projects
+	e.allLoaded = true
+	e.allExpanded = true
+	e.mu.Unlock()
+	e.rebuildVisible()
+}
+
+// SetProjects is kept for backward compatibility — populates the "all" list.
+func (e *Explorer) SetProjects(projects []string) {
+	e.SetAllProjects(projects)
+}
+
+// AddProject adds a single project to the all list if not already present.
+func (e *Explorer) AddProject(project string) {
+	e.mu.Lock()
+	for _, p := range e.allProjects {
+		if p == project {
+			e.mu.Unlock()
+			return
+		}
+	}
+	e.allProjects = append(e.allProjects, project)
+	sort.Strings(e.allProjects)
+	if !e.allLoaded {
+		e.allLoaded = true
+	}
+	e.mu.Unlock()
+	e.rebuildVisible()
+}
+
+// AllKnownProjects returns a deduplicated, sorted list of all known projects.
+func (e *Explorer) AllKnownProjects() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, p := range e.favProjects {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	for _, p := range e.recentProjects {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	for _, p := range e.allProjects {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (e *Explorer) toggleBranch(id string) {
@@ -267,7 +509,6 @@ func (e *Explorer) toggleBranch(id string) {
 
 	// Expand
 	if cached, ok := e.children[id]; ok {
-		// Already loaded — insert into visible
 		node.expanded = true
 		e.insertChildren(idx, cached)
 		e.mu.Unlock()
@@ -349,6 +590,10 @@ func (e *Explorer) countDescendants(idx int) int {
 	count := 0
 	for i := idx + 1; i < len(e.visible); i++ {
 		if e.visible[i].depth <= parentDepth {
+			// Stop at headers too
+			if e.visible[i].isHeader {
+				break
+			}
 			break
 		}
 		count++
@@ -367,4 +612,3 @@ func (e *Explorer) insertChildren(idx int, childNodes []explorerNode) {
 	e.visible = append(e.visible[:idx+1], childNodes...)
 	e.visible = append(e.visible, tail...)
 }
-

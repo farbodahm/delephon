@@ -32,7 +32,6 @@ type App struct {
 
 	ctx       context.Context
 	cancelRun context.CancelFunc
-	projects  []string
 }
 
 func NewApp(window fyne.Window, st *store.Store, ctx context.Context) *App {
@@ -87,9 +86,23 @@ func (a *App) wireCallbacks() {
 		return nil, nil
 	}
 
-	// Explorer: favorite project selected -> set project in editor
-	a.explorer.OnFavSelected = func(project string) {
+	// Explorer: project node clicked -> set project in editor
+	a.explorer.OnProjectSelected = func(project string) {
 		a.editor.SetProject(project)
+	}
+
+	// Explorer: load all projects on demand
+	a.explorer.OnLoadAllProjects = func() {
+		go func() {
+			projects, err := a.bqMgr.ListProjects(a.ctx)
+			if err != nil {
+				log.Printf("Failed to list projects: %v", err)
+				return
+			}
+			sort.Strings(projects)
+			a.explorer.SetAllProjects(projects)
+			a.editor.SetProjects(a.explorer.AllKnownProjects())
+		}()
 	}
 
 	// Explorer: table selected -> show schema
@@ -160,6 +173,7 @@ func (a *App) runQuery(project, sqlText string) {
 		a.results.SetStatus(fmt.Sprintf("Error: %v", err))
 		_ = a.store.AddHistory(sqlText, project, dur, 0, err.Error())
 		a.refreshHistory()
+		a.refreshRecentProjects()
 		return
 	}
 
@@ -172,6 +186,7 @@ func (a *App) runQuery(project, sqlText string) {
 
 	_ = a.store.AddHistory(sqlText, project, dur, result.RowCount, "")
 	a.refreshHistory()
+	a.refreshRecentProjects()
 }
 
 func (a *App) refreshHistory() {
@@ -245,26 +260,18 @@ func (a *App) addProject() {
 				return
 			}
 			a.explorer.AddProject(entry.Text)
-			a.projects = append(a.projects, entry.Text)
-			sort.Strings(a.projects)
-			a.editor.SetProjects(a.projects)
+			a.editor.SetProjects(a.explorer.AllKnownProjects())
 		},
 		a.window,
 	)
 }
 
-func (a *App) LoadProjects() {
+// LoadInitialProjects loads favorites and recent projects from the local DB (no GCP API call).
+func (a *App) LoadInitialProjects() {
 	go func() {
-		projects, err := a.bqMgr.ListProjects(a.ctx)
-		if err != nil {
-			fmt.Printf("Failed to list projects: %v\n", err)
-			return
-		}
-		sort.Strings(projects)
-		a.projects = projects
-		a.explorer.SetProjects(projects)
-		a.editor.SetProjects(projects)
 		a.refreshFavProjects()
+		a.refreshRecentProjects()
+		a.editor.SetProjects(a.explorer.AllKnownProjects())
 	}()
 }
 
@@ -274,6 +281,15 @@ func (a *App) refreshFavProjects() {
 		return
 	}
 	a.explorer.SetFavProjects(favs)
+}
+
+func (a *App) refreshRecentProjects() {
+	projects, err := a.store.ListRecentProjects(20)
+	if err != nil {
+		return
+	}
+	a.explorer.SetRecentProjects(projects)
+	a.editor.SetProjects(a.explorer.AllKnownProjects())
 }
 
 func (a *App) toggleFavProject() {

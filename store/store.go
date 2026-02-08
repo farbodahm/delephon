@@ -215,6 +215,31 @@ func (s *Store) ListFavoriteProjects() ([]string, error) {
 	return projects, rows.Err()
 }
 
+// Recent Projects (derived from history)
+
+func (s *Store) ListRecentProjects(limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT project FROM history WHERE project != '' GROUP BY project ORDER BY MAX(timestamp) DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
 func (s *Store) IsFavoriteProject(projectID string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM favorite_projects WHERE project_id = ?`, projectID).Scan(&count)
