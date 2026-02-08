@@ -158,6 +158,8 @@ func (e *Editor) SetSQL(sql string) {
 	qt, ok := e.tabData[tab]
 	e.mu.Unlock()
 	if ok {
-		qt.entry.SetText(sql)
+		fyne.Do(func() {
+			qt.entry.SetText(sql)
+		})
 	}
 }

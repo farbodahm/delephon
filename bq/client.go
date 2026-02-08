@@ -22,7 +22,9 @@ type QueryResult struct {
 }
 
 type TableSchema struct {
-	Fields []SchemaField
+	Fields         []SchemaField
+	PartitionField string // empty if not partitioned, or the column name (e.g. "_PARTITIONTIME" for ingestion-time)
+	PartitionType  string // "DAY", "HOUR", "MONTH", "YEAR", or ""
 }
 
 type SchemaField struct {
@@ -152,6 +154,29 @@ func (c *Client) GetTableSchema(ctx context.Context, projectID, datasetID, table
 			Description: f.Description,
 		})
 	}
+
+	// Extract partitioning info
+	if tp := md.TimePartitioning; tp != nil {
+		if tp.Field != "" {
+			schema.PartitionField = tp.Field
+		} else {
+			schema.PartitionField = "_PARTITIONTIME"
+		}
+		switch tp.Type {
+		case bigquery.DayPartitioningType:
+			schema.PartitionType = "DAY"
+		case bigquery.HourPartitioningType:
+			schema.PartitionType = "HOUR"
+		case bigquery.MonthPartitioningType:
+			schema.PartitionType = "MONTH"
+		case bigquery.YearPartitioningType:
+			schema.PartitionType = "YEAR"
+		}
+	} else if rp := md.RangePartitioning; rp != nil {
+		schema.PartitionField = rp.Field
+		schema.PartitionType = "RANGE"
+	}
+
 	return schema, nil
 }
 

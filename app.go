@@ -107,7 +107,7 @@ func (a *App) wireCallbacks() {
 		}()
 	}
 
-	// Explorer: table selected -> show schema
+	// Explorer: table selected -> show schema + generate SELECT query
 	a.explorer.OnTableSelected = func(project, dataset, table string) {
 		go func() {
 			schema, err := a.bqMgr.GetTableSchema(a.ctx, project, dataset, table)
@@ -125,6 +125,16 @@ func (a *App) wireCallbacks() {
 				}
 			}
 			a.schema.SetSchema(project, dataset, table, fields)
+
+			// Generate SELECT query
+			fqn := fmt.Sprintf("`%s.%s.%s`", project, dataset, table)
+			sql := fmt.Sprintf("SELECT *\nFROM %s", fqn)
+			if schema.PartitionField != "" {
+				sql += "\nWHERE " + a.partitionWhereClause(schema.PartitionField, schema.PartitionType)
+			}
+			sql += "\nLIMIT 1000"
+			a.editor.SetSQL(sql)
+			a.editor.SetProject(project)
 		}()
 	}
 
@@ -292,6 +302,31 @@ func (a *App) refreshRecentProjects() {
 	}
 	a.explorer.SetRecentProjects(projects)
 	a.editor.SetProjects(a.explorer.AllKnownProjects())
+}
+
+func (a *App) partitionWhereClause(field, partType string) string {
+	if field == "_PARTITIONTIME" {
+		// Ingestion-time partitioning: always TIMESTAMP type
+		switch partType {
+		case "HOUR":
+			return "_PARTITIONTIME >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), HOUR)"
+		default:
+			return "_PARTITIONTIME >= TIMESTAMP(CURRENT_DATE())"
+		}
+	}
+	// Column-based partitioning: use DATE() to handle both DATE and TIMESTAMP columns
+	switch partType {
+	case "DAY":
+		return fmt.Sprintf("DATE(%s) = CURRENT_DATE()", field)
+	case "HOUR":
+		return fmt.Sprintf("DATE(%s) = CURRENT_DATE()", field)
+	case "MONTH":
+		return fmt.Sprintf("DATE(%s) >= DATE_TRUNC(CURRENT_DATE(), MONTH)", field)
+	case "YEAR":
+		return fmt.Sprintf("DATE(%s) >= DATE_TRUNC(CURRENT_DATE(), YEAR)", field)
+	default:
+		return fmt.Sprintf("%s IS NOT NULL", field)
+	}
 }
 
 func (a *App) toggleTheme() {
