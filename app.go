@@ -11,6 +11,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/farbod/delephon/bq"
@@ -292,6 +294,17 @@ func (a *App) refreshRecentProjects() {
 	a.editor.SetProjects(a.explorer.AllKnownProjects())
 }
 
+func (a *App) toggleTheme() {
+	if appTheme.Variant() == theme.VariantDark {
+		appTheme.SetVariant(theme.VariantLight)
+		_ = a.store.SetSetting("theme_variant", "light")
+	} else {
+		appTheme.SetVariant(theme.VariantDark)
+		_ = a.store.SetSetting("theme_variant", "dark")
+	}
+	fyne.CurrentApp().Settings().SetTheme(appTheme)
+}
+
 func (a *App) toggleFavProject() {
 	project := a.editor.GetCurrentProject()
 	if project == "" {
@@ -324,22 +337,30 @@ func (a *App) BuildUI() fyne.CanvasObject {
 	mainSplit.Offset = 0.2
 
 	// Toolbar
+	runBtn := widget.NewButtonWithIcon("Run", theme.Icon(theme.IconNameMediaPlay), func() {
+		project := a.editor.GetCurrentProject()
+		sql := a.editor.GetCurrentSQL()
+		if project != "" && sql != "" {
+			go a.runQuery(project, sql)
+		}
+	})
+	runBtn.Importance = widget.HighImportance
+
+	stopBtn := widget.NewButtonWithIcon("Stop", theme.Icon(theme.IconNameMediaStop), func() {
+		if a.cancelRun != nil {
+			a.cancelRun()
+		}
+	})
+	stopBtn.Importance = widget.DangerImportance
+
 	toolbar := container.NewHBox(
-		widget.NewButton("Run", func() {
-			project := a.editor.GetCurrentProject()
-			sql := a.editor.GetCurrentSQL()
-			if project != "" && sql != "" {
-				go a.runQuery(project, sql)
-			}
-		}),
-		widget.NewButton("Stop", func() {
-			if a.cancelRun != nil {
-				a.cancelRun()
-			}
-		}),
-		widget.NewButton("Save Favorite", a.saveFavorite),
+		runBtn,
+		stopBtn,
+		widget.NewButtonWithIcon("Save Favorite", theme.Icon(theme.IconNameDocumentSave), a.saveFavorite),
 		widget.NewButton("Star Project", a.toggleFavProject),
-		widget.NewButton("Add Project", a.addProject),
+		widget.NewButtonWithIcon("Add Project", theme.Icon(theme.IconNameContentAdd), a.addProject),
+		layout.NewSpacer(),
+		widget.NewButtonWithIcon("", theme.Icon(theme.IconNameColorPalette), a.toggleTheme),
 	)
 
 	// Register Ctrl+Enter shortcut

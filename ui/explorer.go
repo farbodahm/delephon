@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"log"
 	"sort"
 	"strings"
 	"sync"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -122,8 +124,9 @@ func NewExplorer() *Explorer {
 		func() fyne.CanvasObject {
 			spacer := widget.NewLabel("")
 			icon := widget.NewIcon(theme.NavigateNextIcon())
-			label := widget.NewLabel("template")
-			return container.NewHBox(spacer, icon, label)
+			label := canvas.NewText("template", color.White)
+			leftGroup := container.NewHBox(spacer, icon)
+			return container.NewBorder(nil, nil, leftGroup, nil, label)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			e.mu.Lock()
@@ -134,10 +137,11 @@ func NewExplorer() *Explorer {
 			node := e.visible[id]
 			e.mu.Unlock()
 
-			box := obj.(*fyne.Container)
-			spacer := box.Objects[0].(*widget.Label)
-			icon := box.Objects[1].(*widget.Icon)
-			label := box.Objects[2].(*widget.Label)
+			c := obj.(*fyne.Container)
+			label := c.Objects[0].(*canvas.Text)
+			leftGroup := c.Objects[1].(*fyne.Container)
+			spacer := leftGroup.Objects[0].(*widget.Label)
+			icon := leftGroup.Objects[1].(*widget.Icon)
 
 			// Indentation
 			indent := ""
@@ -146,21 +150,22 @@ func NewExplorer() *Explorer {
 			}
 			spacer.SetText(indent)
 
+			label.Text = node.label
+			label.Color = explorerNodeColor(node)
+			label.TextSize = theme.Size(theme.SizeNameText)
+
 			if node.isHeader {
-				label.SetText(node.label)
 				label.TextStyle = fyne.TextStyle{Bold: true}
-				label.Refresh()
 				if node.expanded {
 					icon.SetResource(theme.MoveDownIcon())
 				} else {
 					icon.SetResource(theme.NavigateNextIcon())
 				}
+				label.Refresh()
 				return
 			}
 
-			label.SetText(node.label)
 			label.TextStyle = fyne.TextStyle{}
-			label.Refresh()
 
 			if node.isBranch {
 				if node.expanded {
@@ -171,6 +176,7 @@ func NewExplorer() *Explorer {
 			} else {
 				icon.SetResource(theme.DocumentIcon())
 			}
+			label.Refresh()
 		},
 	)
 
@@ -475,6 +481,21 @@ func (e *Explorer) AllKnownProjects() []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func explorerNodeColor(node explorerNode) color.Color {
+	t := fyne.CurrentApp().Settings().Theme()
+	if node.isHeader {
+		return t.Color("explorerHeader", 0)
+	}
+	switch node.depth {
+	case 1: // dataset
+		return t.Color("explorerDataset", 0)
+	case 2: // table
+		return t.Color("explorerTable", 0)
+	default: // project
+		return t.Color("explorerProject", 0)
+	}
 }
 
 func (e *Explorer) toggleBranch(id string) {

@@ -6,6 +6,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/theme"
 
 	"github.com/farbod/delephon/store"
 )
@@ -18,7 +19,18 @@ func main() {
 	defer st.Close()
 
 	fyneApp := app.New()
-	fyneApp.Settings().SetTheme(&delephonTheme{})
+
+	// Load theme preference or follow system default
+	variant, _ := st.GetSetting("theme_variant")
+	switch variant {
+	case "light":
+		appTheme.SetVariant(theme.VariantLight)
+	case "dark":
+		appTheme.SetVariant(theme.VariantDark)
+	default:
+		appTheme.SetVariant(fyneApp.Settings().ThemeVariant())
+	}
+	fyneApp.Settings().SetTheme(appTheme)
 
 	window := fyneApp.NewWindow("Delephon — BigQuery Client")
 	window.Resize(fyne.NewSize(1280, 800))
