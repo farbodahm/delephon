@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -57,7 +58,7 @@ func NewHistory() *History {
 			}
 			e := h.entries[id]
 			ts := e.Timestamp.Format("15:04:05")
-			sql := e.SQL
+			sql := strings.Join(strings.Fields(e.SQL), " ")
 			if len(sql) > 80 {
 				sql = sql[:80] + "..."
 			}
