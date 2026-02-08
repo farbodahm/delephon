@@ -67,7 +67,9 @@ func NewFavorites() *Favorites {
 
 func (f *Favorites) SetEntries(entries []FavoriteEntry) {
 	f.entries = entries
-	f.list.Refresh()
+	fyne.Do(func() {
+		f.list.Refresh()
+	})
 }
 
 func truncate(s string, n int) string {

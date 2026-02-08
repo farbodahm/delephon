@@ -57,22 +57,25 @@ func NewResults() *Results {
 func (r *Results) SetData(columns []string, rows [][]string) {
 	r.columns = columns
 	r.rows = rows
-
-	// Set column widths
-	for i := range columns {
-		r.table.SetColumnWidth(i, 150)
-	}
-
-	r.table.Refresh()
+	fyne.Do(func() {
+		for i := range columns {
+			r.table.SetColumnWidth(i, 150)
+		}
+		r.table.Refresh()
+	})
 }
 
 func (r *Results) SetStatus(text string) {
-	r.statusBar.SetText(text)
+	fyne.Do(func() {
+		r.statusBar.SetText(text)
+	})
 }
 
 func (r *Results) Clear() {
 	r.columns = nil
 	r.rows = nil
-	r.table.Refresh()
-	r.statusBar.SetText("Ready")
+	fyne.Do(func() {
+		r.table.Refresh()
+		r.statusBar.SetText("Ready")
+	})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -64,10 +65,12 @@ func (a *App) wireCallbacks() {
 				return nil, err
 			}
 			sort.Strings(datasets)
+			log.Printf("app: datasets for %s: %v", project, datasets)
 			ids := make([]string, len(datasets))
 			for i, ds := range datasets {
 				ids[i] = ui.DatasetNodeID(project, ds)
 			}
+			log.Printf("app: dataset node IDs: %v", ids)
 			return ids, nil
 		case "d":
 			tables, err := a.bqMgr.ListTables(a.ctx, project, dataset)
@@ -84,10 +87,9 @@ func (a *App) wireCallbacks() {
 		return nil, nil
 	}
 
-	// Explorer: favorite project selected -> set project in editor & expand in tree
+	// Explorer: favorite project selected -> set project in editor
 	a.explorer.OnFavSelected = func(project string) {
 		a.editor.SetProject(project)
-		a.explorer.Tree.OpenBranch(ui.ProjectNodeID(project))
 	}
 
 	// Explorer: table selected -> show schema
@@ -340,7 +342,9 @@ func (a *App) BuildUI() fyne.CanvasObject {
 }
 
 func (a *App) showError(title string, err error) {
-	dialog.ShowError(err, a.window)
+	fyne.Do(func() {
+		dialog.ShowError(err, a.window)
+	})
 }
 
 func (a *App) Close() {

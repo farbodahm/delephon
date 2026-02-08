@@ -118,14 +118,18 @@ func (e *Editor) run() {
 }
 
 func (e *Editor) SetProjects(projects []string) {
-	e.projects.Options = projects
-	if len(projects) > 0 && e.projects.Selected == "" {
-		e.projects.SetSelected(projects[0])
-	}
+	fyne.Do(func() {
+		e.projects.Options = projects
+		if len(projects) > 0 && e.projects.Selected == "" {
+			e.projects.SetSelected(projects[0])
+		}
+	})
 }
 
 func (e *Editor) SetProject(project string) {
-	e.projects.SetSelected(project)
+	fyne.Do(func() {
+		e.projects.SetSelected(project)
+	})
 }
 
 func (e *Editor) GetCurrentSQL() string {

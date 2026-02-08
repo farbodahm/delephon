@@ -75,13 +75,17 @@ func NewSchemaView() *SchemaView {
 }
 
 func (s *SchemaView) SetSchema(project, dataset, table string, fields []SchemaField) {
-	s.titleBar.SetText(fmt.Sprintf("%s.%s.%s", project, dataset, table))
 	s.fields = fields
-	s.table.Refresh()
+	fyne.Do(func() {
+		s.titleBar.SetText(fmt.Sprintf("%s.%s.%s", project, dataset, table))
+		s.table.Refresh()
+	})
 }
 
 func (s *SchemaView) Clear() {
-	s.titleBar.SetText("Select a table to view schema")
 	s.fields = nil
-	s.table.Refresh()
+	fyne.Do(func() {
+		s.titleBar.SetText("Select a table to view schema")
+		s.table.Refresh()
+	})
 }

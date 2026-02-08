@@ -82,5 +82,7 @@ func NewHistory() *History {
 
 func (h *History) SetEntries(entries []HistoryEntry) {
 	h.entries = entries
-	h.list.Refresh()
+	fyne.Do(func() {
+		h.list.Refresh()
+	})
 }
