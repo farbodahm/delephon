@@ -34,9 +34,10 @@ func main() {
 	// Load projects in background
 	application.LoadProjects()
 
-	// Load history and favorites
+	// Load history, favorites, and favorite projects from local DB
 	go application.refreshHistory()
 	go application.refreshFavorites()
+	go application.refreshFavProjects()
 
 	window.ShowAndRun()
 }

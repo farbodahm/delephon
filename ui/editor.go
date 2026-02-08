@@ -124,6 +124,10 @@ func (e *Editor) SetProjects(projects []string) {
 	}
 }
 
+func (e *Editor) SetProject(project string) {
+	e.projects.SetSelected(project)
+}
+
 func (e *Editor) GetCurrentSQL() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()

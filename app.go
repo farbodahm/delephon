@@ -84,6 +84,12 @@ func (a *App) wireCallbacks() {
 		return nil, nil
 	}
 
+	// Explorer: favorite project selected -> set project in editor & expand in tree
+	a.explorer.OnFavSelected = func(project string) {
+		a.editor.SetProject(project)
+		a.explorer.Tree.OpenBranch(ui.ProjectNodeID(project))
+	}
+
 	// Explorer: table selected -> show schema
 	a.explorer.OnTableSelected = func(project, dataset, table string) {
 		go func() {
@@ -256,7 +262,30 @@ func (a *App) LoadProjects() {
 		a.projects = projects
 		a.explorer.SetProjects(projects)
 		a.editor.SetProjects(projects)
+		a.refreshFavProjects()
 	}()
+}
+
+func (a *App) refreshFavProjects() {
+	favs, err := a.store.ListFavoriteProjects()
+	if err != nil {
+		return
+	}
+	a.explorer.SetFavProjects(favs)
+}
+
+func (a *App) toggleFavProject() {
+	project := a.editor.GetCurrentProject()
+	if project == "" {
+		return
+	}
+	isFav, _ := a.store.IsFavoriteProject(project)
+	if isFav {
+		_ = a.store.RemoveFavoriteProject(project)
+	} else {
+		_ = a.store.AddFavoriteProject(project)
+	}
+	a.refreshFavProjects()
 }
 
 func (a *App) BuildUI() fyne.CanvasObject {
@@ -273,7 +302,7 @@ func (a *App) BuildUI() fyne.CanvasObject {
 	rightSplit.Offset = 0.4
 
 	// Main: explorer (left) | right
-	mainSplit := container.NewHSplit(a.explorer, rightSplit)
+	mainSplit := container.NewHSplit(a.explorer.Container, rightSplit)
 	mainSplit.Offset = 0.2
 
 	// Toolbar
@@ -291,6 +320,7 @@ func (a *App) BuildUI() fyne.CanvasObject {
 			}
 		}),
 		widget.NewButton("Save Favorite", a.saveFavorite),
+		widget.NewButton("Star Project", a.toggleFavProject),
 		widget.NewButton("Add Project", a.addProject),
 	)
 

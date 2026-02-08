@@ -81,6 +81,9 @@ func (s *Store) migrate() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);
+		CREATE TABLE IF NOT EXISTS favorite_projects (
+			project_id TEXT PRIMARY KEY
+		);
 	`)
 	return err
 }
@@ -178,4 +181,42 @@ func (s *Store) SetSetting(key, value string) error {
 		key, value,
 	)
 	return err
+}
+
+// Favorite Projects
+
+func (s *Store) AddFavoriteProject(projectID string) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO favorite_projects (project_id) VALUES (?)`,
+		projectID,
+	)
+	return err
+}
+
+func (s *Store) RemoveFavoriteProject(projectID string) error {
+	_, err := s.db.Exec(`DELETE FROM favorite_projects WHERE project_id = ?`, projectID)
+	return err
+}
+
+func (s *Store) ListFavoriteProjects() ([]string, error) {
+	rows, err := s.db.Query(`SELECT project_id FROM favorite_projects ORDER BY project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+func (s *Store) IsFavoriteProject(projectID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM favorite_projects WHERE project_id = ?`, projectID).Scan(&count)
+	return count > 0, err
 }
