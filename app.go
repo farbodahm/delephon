@@ -15,9 +15,9 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/farbod/delephon/bq"
-	"github.com/farbod/delephon/store"
-	"github.com/farbod/delephon/ui"
+	"github.com/farbodahm/delephon/bq"
+	"github.com/farbodahm/delephon/store"
+	"github.com/farbodahm/delephon/ui"
 )
 
 type App struct {

@@ -1,4 +1,4 @@
-module github.com/farbod/delephon
+module github.com/farbodahm/delephon
 
 go 1.24.0
 

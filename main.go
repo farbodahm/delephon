@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/theme"
 
-	"github.com/farbod/delephon/store"
+	"github.com/farbodahm/delephon/store"
 )
 
 func main() {
