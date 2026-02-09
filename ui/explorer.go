@@ -20,7 +20,7 @@ import (
 //   "d:<project>/<dataset>"
 //   "t:<project>/<dataset>/<table>"
 
-func ProjectNodeID(project string) string         { return "p:" + project }
+func ProjectNodeID(project string) string          { return "p:" + project }
 func DatasetNodeID(project, dataset string) string { return fmt.Sprintf("d:%s/%s", project, dataset) }
 func TableNodeID(project, dataset, table string) string {
 	return fmt.Sprintf("t:%s/%s/%s", project, dataset, table)
@@ -51,7 +51,7 @@ type OnTableSelectedFunc func(project, dataset, table string)
 type explorerNode struct {
 	id       string
 	label    string
-	depth    int  // 0=project/header, 1=dataset, 2=table
+	depth    int // 0=project/header, 1=dataset, 2=table
 	isBranch bool
 	expanded bool
 	isHeader bool // section header (non-clickable for expand, but "All Projects" is clickable to load)
@@ -85,10 +85,10 @@ type Explorer struct {
 
 	searchFilter string // current search text
 
-	LoadChildren       LoadChildrenFunc
-	OnTableSelected    OnTableSelectedFunc
-	OnLoadAllProjects  func()                // callback to load all projects from GCP
-	OnProjectSelected  func(project string)  // callback when a project node is clicked (set in editor)
+	LoadChildren      LoadChildrenFunc
+	OnTableSelected   OnTableSelectedFunc
+	OnLoadAllProjects func()               // callback to load all projects from GCP
+	OnProjectSelected func(project string) // callback when a project node is clicked (set in editor)
 
 	Container fyne.CanvasObject
 }

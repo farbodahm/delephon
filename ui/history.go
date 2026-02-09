@@ -26,8 +26,8 @@ type History struct {
 	list    *widget.List
 	entries []HistoryEntry
 
-	OnSelect    OnHistorySelectFunc
-	OnRefresh   func()
+	OnSelect  OnHistorySelectFunc
+	OnRefresh func()
 
 	Container fyne.CanvasObject
 }

@@ -22,8 +22,8 @@ type Favorites struct {
 	list    *widget.List
 	entries []FavoriteEntry
 
-	OnSelect OnFavoriteSelectFunc
-	OnDelete OnFavoriteDeleteFunc
+	OnSelect  OnFavoriteSelectFunc
+	OnDelete  OnFavoriteDeleteFunc
 	OnRefresh func()
 
 	Container fyne.CanvasObject
