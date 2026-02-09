@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  check:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +15,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
 
       - name: Check formatting
         run: |
@@ -28,15 +25,41 @@ jobs:
             exit 1
           fi
 
+  vet:
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+
       - name: Vet
         run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
 
       - name: Test
         run: go test ./...
 
   integration:
     runs-on: ubuntu-latest
-    needs: check
+    needs: fmt
     steps:
       - uses: actions/checkout@v4
 
