@@ -14,10 +14,10 @@ import (
 const maxRows = 10000
 
 type QueryResult struct {
-	Columns  []string
-	Rows     [][]string
-	RowCount int64
-	Duration time.Duration
+	Columns        []string
+	Rows           [][]string
+	RowCount       int64
+	Duration       time.Duration
 	BytesProcessed int64
 }
 
