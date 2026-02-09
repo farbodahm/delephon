@@ -52,6 +52,10 @@ func New() (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	return newWithDB(db)
+}
+
+func newWithDB(db *sql.DB) (*Store, error) {
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
