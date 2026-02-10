@@ -88,11 +88,6 @@ func (a *App) wireCallbacks() {
 		return nil, nil
 	}
 
-	// Explorer: project node clicked -> set project in editor
-	a.explorer.OnProjectSelected = func(project string) {
-		a.editor.SetProject(project)
-	}
-
 	// Explorer: load all projects on demand
 	a.explorer.OnLoadAllProjects = func() {
 		go func() {
@@ -134,7 +129,6 @@ func (a *App) wireCallbacks() {
 			}
 			sql += "\nLIMIT 1000"
 			a.editor.SetSQL(sql)
-			a.editor.SetProject(project)
 		}()
 	}
 
