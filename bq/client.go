@@ -58,6 +58,13 @@ func (c *Client) getClient(projectID string) (*bigquery.Client, error) {
 	return cl, nil
 }
 
+func (c *Client) getAnyClient(fallbackProjectID string) (*bigquery.Client, error) {
+	for _, cl := range c.clients {
+		return cl, nil
+	}
+	return c.getClient(fallbackProjectID)
+}
+
 func (c *Client) Close() {
 	for _, cl := range c.clients {
 		cl.Close()
@@ -90,12 +97,13 @@ func (c *Client) ListProjects(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) ListDatasets(ctx context.Context, projectID string) ([]string, error) {
-	cl, err := c.getClient(projectID)
+	cl, err := c.getAnyClient(projectID)
 	if err != nil {
 		return nil, err
 	}
 	var datasets []string
 	it := cl.Datasets(ctx)
+	it.ProjectID = projectID
 	for {
 		ds, err := it.Next()
 		if err == iterator.Done {
@@ -110,12 +118,12 @@ func (c *Client) ListDatasets(ctx context.Context, projectID string) ([]string, 
 }
 
 func (c *Client) ListTables(ctx context.Context, projectID, datasetID string) ([]string, error) {
-	cl, err := c.getClient(projectID)
+	cl, err := c.getAnyClient(projectID)
 	if err != nil {
 		return nil, err
 	}
 	var tables []string
-	it := cl.Dataset(datasetID).Tables(ctx)
+	it := cl.DatasetInProject(projectID, datasetID).Tables(ctx)
 	for {
 		t, err := it.Next()
 		if err == iterator.Done {
@@ -130,11 +138,11 @@ func (c *Client) ListTables(ctx context.Context, projectID, datasetID string) ([
 }
 
 func (c *Client) GetTableSchema(ctx context.Context, projectID, datasetID, tableID string) (*TableSchema, error) {
-	cl, err := c.getClient(projectID)
+	cl, err := c.getAnyClient(projectID)
 	if err != nil {
 		return nil, err
 	}
-	md, err := cl.Dataset(datasetID).Table(tableID).Metadata(ctx)
+	md, err := cl.DatasetInProject(projectID, datasetID).Table(tableID).Metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("table metadata: %w", err)
 	}

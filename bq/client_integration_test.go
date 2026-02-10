@@ -21,6 +21,7 @@ import (
 )
 
 const projectID = "test-project"
+const otherProjectID = "other-project"
 
 var dataYAML = []byte(`
 projects:
@@ -46,6 +47,19 @@ projects:
       - id: 3
         name: Charlie
         email: charlie@example.com
+- id: other-project
+  datasets:
+  - id: other_dataset
+    tables:
+    - id: orders
+      columns:
+      - name: order_id
+        type: INTEGER
+      - name: product
+        type: STRING
+      data:
+      - order_id: 100
+        product: Widget
 `)
 
 var testClient *Client
@@ -182,6 +196,52 @@ func TestRunQueryFromTable(t *testing.T) {
 	for i, wantName := range wantNames {
 		if result.Rows[i][nameIdx] != wantName {
 			t.Errorf("row %d: expected name %q, got %q", i, wantName, result.Rows[i][nameIdx])
+		}
+	}
+}
+
+// TestCrossProjectBrowsing verifies that a client created for test-project can
+// browse datasets, tables, and schemas in other-project via the cross-project
+// SDK methods (DatasetsInProject / DatasetInProject).
+func TestCrossProjectBrowsing(t *testing.T) {
+	// The testClient only has a *bigquery.Client keyed to "test-project".
+	// getAnyClient will reuse that client for browsing other-project.
+
+	datasets, err := testClient.ListDatasets(context.Background(), otherProjectID)
+	if err != nil {
+		t.Fatalf("ListDatasets(other-project): %v", err)
+	}
+	if !slices.Contains(datasets, "other_dataset") {
+		t.Errorf("expected other_dataset in datasets, got %v", datasets)
+	}
+
+	tables, err := testClient.ListTables(context.Background(), otherProjectID, "other_dataset")
+	if err != nil {
+		t.Fatalf("ListTables(other-project, other_dataset): %v", err)
+	}
+	if !slices.Contains(tables, "orders") {
+		t.Errorf("expected orders in tables, got %v", tables)
+	}
+
+	schema, err := testClient.GetTableSchema(context.Background(), otherProjectID, "other_dataset", "orders")
+	if err != nil {
+		t.Fatalf("GetTableSchema(other-project, other_dataset, orders): %v", err)
+	}
+	wantFields := map[string]string{
+		"order_id": "INTEGER",
+		"product":  "STRING",
+	}
+	if len(schema.Fields) != len(wantFields) {
+		t.Fatalf("expected %d fields, got %d", len(wantFields), len(schema.Fields))
+	}
+	for _, f := range schema.Fields {
+		wantType, ok := wantFields[f.Name]
+		if !ok {
+			t.Errorf("unexpected field %q", f.Name)
+			continue
+		}
+		if f.Type != wantType {
+			t.Errorf("field %q: expected type %q, got %q", f.Name, wantType, f.Type)
 		}
 	}
 }
