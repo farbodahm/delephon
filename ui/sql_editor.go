@@ -617,6 +617,11 @@ func (e *SQLEditor) Tapped(ev *fyne.PointEvent) {
 // --- Fyne Draggable ---
 
 func (e *SQLEditor) Dragged(ev *fyne.DragEvent) {
+	c := fyne.CurrentApp().Driver().CanvasForObject(e)
+	if c != nil {
+		c.Focus(e)
+	}
+
 	e.mu.Lock()
 	if !e.dragging {
 		// First drag event: compute start position and set anchor there.
