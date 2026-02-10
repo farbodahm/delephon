@@ -11,7 +11,8 @@ I wanted a lightweight, native app that would let me quickly browse my BigQuery 
 ## Features
 
 - **Smart project explorer** — favorites and recently queried projects show up instantly, all projects load on demand
-- **Fuzzy search** — filter across all your GCP projects from the search box
+- **Search projects & tables** — find any table across your starred and recent projects; matching tables surface the project to the top
+- **Background caching** — datasets and tables load in parallel behind the scenes, so the second search is instant
 - **Query editor** — multi-tab SQL editor with Ctrl+Enter to run
 - **Auto-generated queries** — click a table to get a `SELECT *` with partition filter pre-filled
 - **Schema viewer** — inspect table columns, types, and descriptions
@@ -19,21 +20,23 @@ I wanted a lightweight, native app that would let me quickly browse my BigQuery 
 - **Saved favorites** — bookmark queries you use often
 - **Star projects** — pin frequently used projects to the top
 
-## Requirements
+## Install
 
-- Go 1.24+
-- GCP credentials configured ([Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials))
+Requires Go 1.24+ and [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials).
 
-## Run
-
-```
+```bash
+# Authenticate with GCP
 gcloud auth application-default login
+
+# Install and run
+go install github.com/farbodahm/delephon@latest
+delephon
+```
+
+Or clone and run locally:
+
+```bash
+git clone https://github.com/farbodahm/delephon.git
+cd delephon
 go run .
-```
-
-## Build
-
-```
-go build -o delephon .
-./delephon
 ```
