@@ -71,6 +71,13 @@ var darkColors = map[fyne.ThemeColorName]color.Color{
 	"explorerProject": rgb(0xE3, 0xE3, 0xE8),
 	"explorerDataset": rgb(0xFD, 0xD6, 0x63),
 	"explorerTable":   rgb(0x81, 0xC9, 0x95),
+
+	// SQL syntax colors
+	"sqlKeyword":  rgb(0x8A, 0xB4, 0xF8),
+	"sqlFunction": rgb(0xC5, 0x8A, 0xF9),
+	"sqlString":   rgb(0x81, 0xC9, 0x95),
+	"sqlNumber":   rgb(0xFD, 0xD6, 0x63),
+	"sqlComment":  rgb(0x9A, 0xA0, 0xA6),
 }
 
 // Google Material Design 3 inspired palette — Light
@@ -109,6 +116,13 @@ var lightColors = map[fyne.ThemeColorName]color.Color{
 	"explorerProject": rgb(0x20, 0x21, 0x24),
 	"explorerDataset": rgb(0xE3, 0x74, 0x00),
 	"explorerTable":   rgb(0x1E, 0x8E, 0x3E),
+
+	// SQL syntax colors
+	"sqlKeyword":  rgb(0x1A, 0x73, 0xE8),
+	"sqlFunction": rgb(0x93, 0x34, 0xE6),
+	"sqlString":   rgb(0x1E, 0x8E, 0x3E),
+	"sqlNumber":   rgb(0xF9, 0xAB, 0x00),
+	"sqlComment":  rgb(0x5F, 0x63, 0x68),
 }
 
 func (d *delephonTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {

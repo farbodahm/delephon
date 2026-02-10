@@ -73,6 +73,22 @@ func TestCustomExplorerColors(t *testing.T) {
 	}
 }
 
+func TestCustomSQLColors(t *testing.T) {
+	th := &delephonTheme{}
+
+	customNames := []fyne.ThemeColorName{"sqlKeyword", "sqlFunction", "sqlString", "sqlNumber", "sqlComment"}
+
+	th.SetVariant(theme.VariantDark)
+	for _, name := range customNames {
+		assertExplorerColor(t, th, "dark", name)
+	}
+
+	th.SetVariant(theme.VariantLight)
+	for _, name := range customNames {
+		assertExplorerColor(t, th, "light", name)
+	}
+}
+
 func TestSizeOverrides(t *testing.T) {
 	th := &delephonTheme{}
 

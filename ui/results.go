@@ -57,9 +57,44 @@ func NewResults() *Results {
 func (r *Results) SetData(columns []string, rows [][]string) {
 	r.columns = columns
 	r.rows = rows
+
+	// Measure column widths based on content.
+	textSize := fyne.CurrentApp().Settings().Theme().Size("text")
+	boldStyle := fyne.TextStyle{Bold: true}
+	normalStyle := fyne.TextStyle{}
+	const padding float32 = 24
+	const minWidth float32 = 80
+	const maxWidth float32 = 400
+	// Sample up to 100 rows to keep it fast.
+	sampleRows := len(rows)
+	if sampleRows > 100 {
+		sampleRows = 100
+	}
+
+	widths := make([]float32, len(columns))
+	for i, col := range columns {
+		w := fyne.MeasureText(col, textSize, boldStyle).Width + padding
+		widths[i] = w
+	}
+
+	for j := 0; j < sampleRows; j++ {
+		for i := 0; i < len(columns) && i < len(rows[j]); i++ {
+			w := fyne.MeasureText(rows[j][i], textSize, normalStyle).Width + padding
+			if w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+
 	fyne.Do(func() {
-		for i := range columns {
-			r.table.SetColumnWidth(i, 150)
+		for i, w := range widths {
+			if w < minWidth {
+				w = minWidth
+			}
+			if w > maxWidth {
+				w = maxWidth
+			}
+			r.table.SetColumnWidth(i, w)
 		}
 		r.table.Refresh()
 	})

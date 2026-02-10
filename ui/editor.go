@@ -13,7 +13,7 @@ import (
 type RunQueryFunc func(project, sql string)
 
 type queryTab struct {
-	entry   *widget.Entry
+	editor  *SQLEditor
 	cancel  func()
 	project string
 }
@@ -80,15 +80,14 @@ func NewEditor() *Editor {
 
 func (e *Editor) newTab() *container.TabItem {
 	e.tabCount++
-	entry := widget.NewMultiLineEntry()
-	entry.SetPlaceHolder("Enter SQL query...")
-	entry.Wrapping = fyne.TextWrapWord
+	editor := NewSQLEditor()
+	editor.SetPlaceHolder("Enter SQL query...")
 
-	tab := container.NewTabItem(fmt.Sprintf("Query %d", e.tabCount), container.NewScroll(entry))
+	tab := container.NewTabItem(fmt.Sprintf("Query %d", e.tabCount), editor)
 
 	e.mu.Lock()
 	e.tabData[tab] = &queryTab{
-		entry:   entry,
+		editor:  editor,
 		project: e.projects.Selected,
 	}
 	e.mu.Unlock()
@@ -108,7 +107,7 @@ func (e *Editor) run() {
 	if project == "" {
 		project = e.projects.Selected
 	}
-	sql := qt.entry.Text
+	sql := qt.editor.Text()
 	if sql == "" || project == "" {
 		return
 	}
@@ -137,7 +136,7 @@ func (e *Editor) GetCurrentSQL() string {
 	defer e.mu.Unlock()
 	tab := e.tabs.Selected()
 	if qt, ok := e.tabData[tab]; ok {
-		return qt.entry.Text
+		return qt.editor.Text()
 	}
 	return ""
 }
@@ -159,7 +158,7 @@ func (e *Editor) SetSQL(sql string) {
 	e.mu.Unlock()
 	if ok {
 		fyne.Do(func() {
-			qt.entry.SetText(sql)
+			qt.editor.SetText(sql)
 		})
 	}
 }
