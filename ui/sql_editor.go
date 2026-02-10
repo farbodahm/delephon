@@ -80,8 +80,6 @@ func NewSQLEditor() *SQLEditor {
 	return e
 }
 
-// --- Public API ---
-
 // Text returns the full editor content.
 func (e *SQLEditor) Text() string {
 	e.mu.Lock()
@@ -128,8 +126,6 @@ func (e *SQLEditor) notifyChanged() {
 		fn(e.Text())
 	}
 }
-
-// --- Selection helpers (caller must hold e.mu) ---
 
 // orderedSelection returns selection bounds with start before end.
 func (e *SQLEditor) orderedSelection() (sRow, sCol, eRow, eCol int) {
@@ -179,8 +175,6 @@ func (e *SQLEditor) beginSelectionLocked() {
 		e.hasSelection = true
 	}
 }
-
-// --- Undo/redo (caller must hold e.mu for saveUndoLocked) ---
 
 func (e *SQLEditor) saveUndoLocked() {
 	snap := undoEntry{
@@ -252,8 +246,6 @@ func (e *SQLEditor) doRedo() {
 	e.notifyChanged()
 }
 
-// --- Cursor movement helpers (caller must hold e.mu) ---
-
 func (e *SQLEditor) cursorLeftLocked() {
 	if e.cursorCol > 0 {
 		e.cursorCol--
@@ -289,8 +281,6 @@ func (e *SQLEditor) cursorDownLocked() {
 		}
 	}
 }
-
-// --- Word boundary helpers (caller must hold e.mu) ---
 
 func isWordByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
@@ -338,8 +328,6 @@ func (e *SQLEditor) wordRightLocked() {
 	e.cursorCol = col
 }
 
-// --- Blink management ---
-
 func (e *SQLEditor) startBlink() {
 	e.stopBlinkTimer()
 	stop := make(chan struct{})
@@ -380,8 +368,6 @@ func (e *SQLEditor) resetBlink() {
 	e.startBlink()
 }
 
-// --- desktop.Keyable (track Shift state for selection) ---
-
 func (e *SQLEditor) KeyDown(ev *fyne.KeyEvent) {
 	if ev.Name == desktop.KeyShiftLeft || ev.Name == desktop.KeyShiftRight {
 		e.mu.Lock()
@@ -397,8 +383,6 @@ func (e *SQLEditor) KeyUp(ev *fyne.KeyEvent) {
 		e.mu.Unlock()
 	}
 }
-
-// --- Fyne Focusable ---
 
 func (e *SQLEditor) FocusGained() {
 	e.mu.Lock()
@@ -577,8 +561,6 @@ func (e *SQLEditor) TypedKey(ev *fyne.KeyEvent) {
 	}
 }
 
-// --- Position helper (caller must hold e.mu) ---
-
 func (e *SQLEditor) clampPositionLocked(row, col int) (int, int) {
 	if row < 0 {
 		row = 0
@@ -594,8 +576,6 @@ func (e *SQLEditor) clampPositionLocked(row, col int) (int, int) {
 	}
 	return row, col
 }
-
-// --- Fyne Tappable ---
 
 func (e *SQLEditor) Tapped(ev *fyne.PointEvent) {
 	c := fyne.CurrentApp().Driver().CanvasForObject(e)
@@ -613,8 +593,6 @@ func (e *SQLEditor) Tapped(ev *fyne.PointEvent) {
 	e.resetBlink()
 	e.refreshContent()
 }
-
-// --- Fyne Draggable ---
 
 func (e *SQLEditor) Dragged(ev *fyne.DragEvent) {
 	c := fyne.CurrentApp().Driver().CanvasForObject(e)
@@ -652,8 +630,6 @@ func (e *SQLEditor) DragEnd() {
 	e.mu.Unlock()
 	e.refreshContent()
 }
-
-// --- Fyne Shortcutable ---
 
 func (e *SQLEditor) TypedShortcut(s fyne.Shortcut) {
 	// Handle CustomShortcut (modifier + key combinations)
@@ -870,13 +846,9 @@ func (e *SQLEditor) doPaste() {
 	e.notifyChanged()
 }
 
-// --- Fyne Tabbable ---
-
 func (e *SQLEditor) AcceptsTab() bool {
 	return true
 }
-
-// --- Highlighting + Rendering ---
 
 func (e *SQLEditor) refreshContent() {
 	e.mu.Lock()
