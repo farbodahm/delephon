@@ -165,7 +165,39 @@ func TestSearchRanksTableMatchesFirst(t *testing.T) {
 	}
 }
 
-func TestSearchOnlyFavAndRecent(t *testing.T) {
+func TestSearchNameMatchWithCachedChildren(t *testing.T) {
+	e := NewExplorer()
+
+	e.mu.Lock()
+	e.recentProjects = []string{"my-orders-project"}
+	// Project has cached children but none match "orders"
+	e.children[ProjectNodeID("my-orders-project")] = []explorerNode{
+		{id: DatasetNodeID("my-orders-project", "ds1"), label: "ds1", depth: 1, isBranch: true},
+	}
+	e.children[DatasetNodeID("my-orders-project", "ds1")] = []explorerNode{
+		{id: TableNodeID("my-orders-project", "ds1", "users"), label: "users", depth: 2},
+	}
+	e.searchFilter = "orders"
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	found := false
+	for _, n := range e.visible {
+		if n.label == "my-orders-project" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'my-orders-project' to appear (name matches 'orders') even when cached tables don't match")
+	}
+}
+
+func TestSearchAllProjectsByName(t *testing.T) {
 	e := NewExplorer()
 
 	e.mu.Lock()
@@ -181,10 +213,45 @@ func TestSearchOnlyFavAndRecent(t *testing.T) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// "all-proj-match" matches the filter by name but should NOT appear (only fav+recent searched)
+	// "all-proj-match" matches the filter by name and should appear
+	found := false
 	for _, n := range e.visible {
 		if n.label == "all-proj-match" {
-			t.Error("'all-proj-match' should not appear in search results (only fav+recent are searched)")
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'all-proj-match' to appear in search results (name match from allProjects)")
+	}
+}
+
+func TestSearchTableOnlyForFavAndRecent(t *testing.T) {
+	e := NewExplorer()
+
+	e.mu.Lock()
+	e.favProjects = []string{"fav-proj"}
+	e.allProjects = []string{"all-proj"}
+	e.allLoaded = true
+	// Cache tables for all-proj with a matching table
+	e.children[ProjectNodeID("all-proj")] = []explorerNode{
+		{id: DatasetNodeID("all-proj", "ds1"), label: "ds1", depth: 1, isBranch: true},
+	}
+	e.children[DatasetNodeID("all-proj", "ds1")] = []explorerNode{
+		{id: TableNodeID("all-proj", "ds1", "orders"), label: "orders", depth: 2},
+	}
+	e.searchFilter = "orders"
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// "all-proj" has a matching table but is only in allProjects — table search doesn't apply
+	for _, n := range e.visible {
+		if n.label == "all-proj" {
+			t.Error("'all-proj' should not appear via table match (table search is only for fav+recent)")
 		}
 	}
 }

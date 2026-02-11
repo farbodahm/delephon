@@ -110,7 +110,11 @@ func NewExplorer() *Explorer {
 	e.searchEntry.OnChanged = func(text string) {
 		e.mu.Lock()
 		e.searchFilter = text
+		shouldLoad := text != "" && !e.allLoaded
 		e.mu.Unlock()
+		if shouldLoad && e.OnLoadAllProjects != nil {
+			e.OnLoadAllProjects()
+		}
 		e.rebuildVisible()
 	}
 
@@ -256,18 +260,20 @@ func (e *Explorer) rebuildVisible() {
 	var nodes []explorerNode
 
 	if filter != "" {
-		// Search mode: only fav + recent projects, matching project names and table names
+		// Search mode:
+		// - Table search: fav + recent projects only (with background loading)
+		// - Name search: fav + recent + all projects
 		seen := make(map[string]bool)
 
 		type projectMatch struct {
 			name         string
-			nameMatch    bool
 			tableMatches []explorerNode
 		}
 		var tableMatchProjects []projectMatch
 		var nameOnlyProjects []projectMatch
 		var toLoad []string
 
+		// Phase 1: fav + recent — search both names and tables
 		for _, list := range [][]string{e.favProjects, e.recentProjects} {
 			for _, p := range list {
 				if seen[p] {
@@ -279,7 +285,7 @@ func (e *Explorer) rebuildVisible() {
 				tableMatches := e.cachedTableMatchesLocked(p, filter)
 
 				if !nameMatch && len(tableMatches) == 0 {
-					// No cached children yet — trigger background load
+					// No match yet — trigger background load if not cached
 					pid := ProjectNodeID(p)
 					if _, hasCached := e.children[pid]; !hasCached && !e.searchInProgress[p] {
 						e.searchInProgress[p] = true
@@ -287,13 +293,32 @@ func (e *Explorer) rebuildVisible() {
 					}
 					continue
 				}
+				if nameMatch && len(tableMatches) == 0 {
+					// Name matches but tables don't — still load tables in background
+					pid := ProjectNodeID(p)
+					if _, hasCached := e.children[pid]; !hasCached && !e.searchInProgress[p] {
+						e.searchInProgress[p] = true
+						toLoad = append(toLoad, p)
+					}
+				}
 
-				pm := projectMatch{name: p, nameMatch: nameMatch, tableMatches: tableMatches}
+				pm := projectMatch{name: p, tableMatches: tableMatches}
 				if len(tableMatches) > 0 {
 					tableMatchProjects = append(tableMatchProjects, pm)
 				} else {
 					nameOnlyProjects = append(nameOnlyProjects, pm)
 				}
+			}
+		}
+
+		// Phase 2: all projects — name matching only (no table search)
+		for _, p := range e.allProjects {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			if strings.Contains(strings.ToLower(p), filter) {
+				nameOnlyProjects = append(nameOnlyProjects, projectMatch{name: p})
 			}
 		}
 
@@ -328,7 +353,7 @@ func (e *Explorer) rebuildVisible() {
 			}
 		}
 
-		// Trigger background loading for uncached projects (outside lock)
+		// Trigger background loading for uncached fav/recent projects (outside lock)
 		e.mu.Unlock()
 		if e.OnSearchProject != nil {
 			for _, p := range toLoad {
