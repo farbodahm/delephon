@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -100,6 +101,33 @@ func (a *App) wireCallbacks() {
 			a.explorer.SetAllProjects(projects)
 			a.editor.SetProjects(a.explorer.AllKnownProjects())
 		}()
+	}
+
+	// Explorer: load datasets+tables for a project (search background loading)
+	a.explorer.OnSearchProject = func(project string) {
+		datasets, err := a.bqMgr.ListDatasets(a.ctx, project)
+		if err != nil {
+			return
+		}
+		sort.Strings(datasets)
+
+		result := make(map[string][]string)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ds := range datasets {
+			ds := ds
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				tables, _ := a.bqMgr.ListTables(a.ctx, project, ds)
+				sort.Strings(tables)
+				mu.Lock()
+				result[ds] = tables
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		a.explorer.CacheProjectData(project, result)
 	}
 
 	// Explorer: table selected -> show schema + generate SELECT query

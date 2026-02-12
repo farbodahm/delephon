@@ -83,35 +83,34 @@ type Explorer struct {
 	recentExpanded bool
 	allExpanded    bool
 
-	searchFilter string // current search text
+	searchFilter     string          // current search text
+	searchInProgress map[string]bool // projects currently being loaded for search
 
 	LoadChildren      LoadChildrenFunc
 	OnTableSelected   OnTableSelectedFunc
 	OnLoadAllProjects func()               // callback to load all projects from GCP
 	OnProjectSelected func(project string) // callback when a project node is clicked (set in editor)
+	OnSearchProject   func(project string) // callback: load all datasets+tables for a project
 
 	Container fyne.CanvasObject
 }
 
 func NewExplorer() *Explorer {
 	e := &Explorer{
-		children:       make(map[string][]explorerNode),
-		loading:        make(map[string]bool),
-		favExpanded:    true,
-		recentExpanded: true,
-		allExpanded:    false,
+		children:         make(map[string][]explorerNode),
+		loading:          make(map[string]bool),
+		searchInProgress: make(map[string]bool),
+		favExpanded:      true,
+		recentExpanded:   true,
+		allExpanded:      false,
 	}
 
 	e.searchEntry = widget.NewEntry()
-	e.searchEntry.SetPlaceHolder("Filter projects...")
+	e.searchEntry.SetPlaceHolder("Filter projects & tables...")
 	e.searchEntry.OnChanged = func(text string) {
 		e.mu.Lock()
 		e.searchFilter = text
-		shouldLoad := text != "" && !e.allLoaded
 		e.mu.Unlock()
-		if shouldLoad && e.OnLoadAllProjects != nil {
-			e.OnLoadAllProjects()
-		}
 		e.rebuildVisible()
 	}
 
@@ -257,34 +256,66 @@ func (e *Explorer) rebuildVisible() {
 	var nodes []explorerNode
 
 	if filter != "" {
-		// Search mode: flat list of all matching projects
+		// Search mode: only fav + recent projects, matching project names and table names
 		seen := make(map[string]bool)
-		var matches []string
 
-		for _, p := range e.favProjects {
-			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
-				seen[p] = true
-				matches = append(matches, p)
-			}
+		type projectMatch struct {
+			name         string
+			nameMatch    bool
+			tableMatches []explorerNode
 		}
-		for _, p := range e.recentProjects {
-			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
+		var tableMatchProjects []projectMatch
+		var nameOnlyProjects []projectMatch
+		var toLoad []string
+
+		for _, list := range [][]string{e.favProjects, e.recentProjects} {
+			for _, p := range list {
+				if seen[p] {
+					continue
+				}
 				seen[p] = true
-				matches = append(matches, p)
-			}
-		}
-		for _, p := range e.allProjects {
-			if strings.Contains(strings.ToLower(p), filter) && !seen[p] {
-				seen[p] = true
-				matches = append(matches, p)
+
+				nameMatch := strings.Contains(strings.ToLower(p), filter)
+				tableMatches := e.cachedTableMatchesLocked(p, filter)
+
+				if !nameMatch && len(tableMatches) == 0 {
+					// No cached children yet — trigger background load
+					pid := ProjectNodeID(p)
+					if _, hasCached := e.children[pid]; !hasCached && !e.searchInProgress[p] {
+						e.searchInProgress[p] = true
+						toLoad = append(toLoad, p)
+					}
+					continue
+				}
+
+				pm := projectMatch{name: p, nameMatch: nameMatch, tableMatches: tableMatches}
+				if len(tableMatches) > 0 {
+					tableMatchProjects = append(tableMatchProjects, pm)
+				} else {
+					nameOnlyProjects = append(nameOnlyProjects, pm)
+				}
 			}
 		}
 
-		for _, p := range matches {
-			nid := ProjectNodeID(p)
+		// Projects with table matches first, then name-only matches
+		for _, pm := range tableMatchProjects {
+			nid := ProjectNodeID(pm.name)
+			nodes = append(nodes, explorerNode{
+				id:       nid,
+				label:    pm.name,
+				depth:    0,
+				isBranch: true,
+				expanded: true,
+			})
+			for _, tbl := range pm.tableMatches {
+				nodes = append(nodes, tbl)
+			}
+		}
+		for _, pm := range nameOnlyProjects {
+			nid := ProjectNodeID(pm.name)
 			node := explorerNode{
 				id:       nid,
-				label:    p,
+				label:    pm.name,
 				depth:    0,
 				isBranch: true,
 				expanded: expandedSet[nid],
@@ -296,6 +327,16 @@ func (e *Explorer) rebuildVisible() {
 				}
 			}
 		}
+
+		// Trigger background loading for uncached projects (outside lock)
+		e.mu.Unlock()
+		if e.OnSearchProject != nil {
+			for _, p := range toLoad {
+				p := p
+				go e.OnSearchProject(p)
+			}
+		}
+		e.mu.Lock()
 	} else {
 		// Section mode
 		// Favorites section
@@ -403,6 +444,80 @@ func (e *Explorer) appendExpandedChildren(nodes []explorerNode, parentID string,
 		}
 	}
 	return nodes
+}
+
+// CacheProjectData is called after parallel BQ loading completes.
+// It populates children caches for the project's datasets and tables,
+// clears searchInProgress, and triggers rebuildVisible.
+func (e *Explorer) CacheProjectData(project string, datasets map[string][]string) {
+	e.mu.Lock()
+	pid := ProjectNodeID(project)
+
+	// Build dataset child nodes for the project
+	var dsNames []string
+	for ds := range datasets {
+		dsNames = append(dsNames, ds)
+	}
+	sort.Strings(dsNames)
+
+	dsNodes := make([]explorerNode, len(dsNames))
+	for i, ds := range dsNames {
+		did := DatasetNodeID(project, ds)
+		dsNodes[i] = explorerNode{
+			id:       did,
+			label:    ds,
+			depth:    1,
+			isBranch: true,
+		}
+
+		// Build table child nodes for each dataset
+		tables := datasets[ds]
+		tblNodes := make([]explorerNode, len(tables))
+		for j, tbl := range tables {
+			tblNodes[j] = explorerNode{
+				id:    TableNodeID(project, ds, tbl),
+				label: tbl,
+				depth: 2,
+			}
+		}
+		e.children[did] = tblNodes
+	}
+	e.children[pid] = dsNodes
+
+	delete(e.searchInProgress, project)
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+}
+
+// cachedTableMatchesLocked walks cached datasets and tables for a project
+// and returns table nodes whose label (formatted as "dataset.table") contains the filter.
+// Must be called with e.mu held.
+func (e *Explorer) cachedTableMatchesLocked(project, filter string) []explorerNode {
+	pid := ProjectNodeID(project)
+	dsNodes, ok := e.children[pid]
+	if !ok {
+		return nil
+	}
+	var matches []explorerNode
+	for _, dsNode := range dsNodes {
+		tblNodes, ok := e.children[dsNode.id]
+		if !ok {
+			continue
+		}
+		_, _, dataset, _ := ParseNodeID(dsNode.id)
+		for _, tblNode := range tblNodes {
+			fqLabel := dataset + "." + tblNode.label
+			if strings.Contains(strings.ToLower(fqLabel), filter) {
+				matches = append(matches, explorerNode{
+					id:    tblNode.id,
+					label: fqLabel,
+					depth: 1,
+				})
+			}
+		}
+	}
+	return matches
 }
 
 // SetFavProjects updates the favorite projects list.

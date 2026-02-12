@@ -91,6 +91,104 @@ func TestNodeIDConstructors(t *testing.T) {
 	}
 }
 
+func TestSearchMatchesTableNames(t *testing.T) {
+	e := NewExplorer()
+
+	e.mu.Lock()
+	e.favProjects = []string{"proj-a"}
+	// Cache datasets and tables for proj-a
+	e.children[ProjectNodeID("proj-a")] = []explorerNode{
+		{id: DatasetNodeID("proj-a", "raw_data"), label: "raw_data", depth: 1, isBranch: true},
+	}
+	e.children[DatasetNodeID("proj-a", "raw_data")] = []explorerNode{
+		{id: TableNodeID("proj-a", "raw_data", "orders"), label: "orders", depth: 2},
+		{id: TableNodeID("proj-a", "raw_data", "users"), label: "users", depth: 2},
+	}
+	e.searchFilter = "orders"
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Should find proj-a with matching table "raw_data.orders"
+	if len(e.visible) < 2 {
+		t.Fatalf("expected at least 2 visible nodes (project + table match), got %d", len(e.visible))
+	}
+	if e.visible[0].label != "proj-a" {
+		t.Errorf("expected first node to be 'proj-a', got %q", e.visible[0].label)
+	}
+	if e.visible[1].label != "raw_data.orders" {
+		t.Errorf("expected second node to be 'raw_data.orders', got %q", e.visible[1].label)
+	}
+}
+
+func TestSearchRanksTableMatchesFirst(t *testing.T) {
+	e := NewExplorer()
+
+	e.mu.Lock()
+	// proj-name-orders matches by name, proj-b matches by table
+	e.favProjects = []string{"proj-name-orders", "proj-b"}
+	// Cache tables for proj-b only
+	e.children[ProjectNodeID("proj-b")] = []explorerNode{
+		{id: DatasetNodeID("proj-b", "ds1"), label: "ds1", depth: 1, isBranch: true},
+	}
+	e.children[DatasetNodeID("proj-b", "ds1")] = []explorerNode{
+		{id: TableNodeID("proj-b", "ds1", "orders"), label: "orders", depth: 2},
+	}
+	e.searchFilter = "orders"
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// proj-b (table match) should appear before proj-name-orders (name match)
+	if len(e.visible) < 3 {
+		t.Fatalf("expected at least 3 visible nodes, got %d", len(e.visible))
+	}
+	if e.visible[0].label != "proj-b" {
+		t.Errorf("expected first project to be 'proj-b' (table match), got %q", e.visible[0].label)
+	}
+	// Find the name-only match
+	foundNameMatch := false
+	for _, n := range e.visible {
+		if n.label == "proj-name-orders" {
+			foundNameMatch = true
+			break
+		}
+	}
+	if !foundNameMatch {
+		t.Error("expected to find 'proj-name-orders' as name match in results")
+	}
+}
+
+func TestSearchOnlyFavAndRecent(t *testing.T) {
+	e := NewExplorer()
+
+	e.mu.Lock()
+	e.favProjects = []string{"fav-proj"}
+	e.recentProjects = []string{"recent-proj"}
+	e.allProjects = []string{"all-proj-match"}
+	e.allLoaded = true
+	e.searchFilter = "match"
+	e.mu.Unlock()
+
+	e.rebuildVisible()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// "all-proj-match" matches the filter by name but should NOT appear (only fav+recent searched)
+	for _, n := range e.visible {
+		if n.label == "all-proj-match" {
+			t.Error("'all-proj-match' should not appear in search results (only fav+recent are searched)")
+		}
+	}
+}
+
 func TestAllKnownProjects(t *testing.T) {
 	e := NewExplorer()
 
