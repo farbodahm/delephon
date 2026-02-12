@@ -33,6 +33,10 @@ type App struct {
 	history   *ui.History
 	favorites *ui.Favorites
 
+	topArea           *fyne.Container
+	editorSchemaSplit *container.Split
+	rightSplit        *container.Split
+
 	ctx       context.Context
 	cancelRun context.CancelFunc
 }
@@ -148,6 +152,7 @@ func (a *App) wireCallbacks() {
 				}
 			}
 			a.schema.SetSchema(project, dataset, table, fields)
+			fyne.Do(func() { a.showSchema() })
 
 			// Generate SELECT query
 			fqn := fmt.Sprintf("`%s.%s.%s`", project, dataset, table)
@@ -198,6 +203,7 @@ func (a *App) runQuery(project, sqlText string) {
 	defer cancel()
 
 	a.results.SetStatus("Running query...")
+	fyne.Do(func() { a.rightSplit.SetOffset(0.4) })
 	start := time.Now()
 
 	result, err := a.bqMgr.RunQuery(ctx, project, sqlText)
@@ -376,21 +382,37 @@ func (a *App) toggleFavProject() {
 	a.refreshFavProjects()
 }
 
+func (a *App) showSchema() {
+	a.topArea.Objects = []fyne.CanvasObject{a.editorSchemaSplit}
+	a.topArea.Refresh()
+}
+
+func (a *App) hideSchema() {
+	a.topArea.Objects = []fyne.CanvasObject{a.editor.Container}
+	a.topArea.Refresh()
+}
+
 func (a *App) BuildUI() fyne.CanvasObject {
-	// Bottom tabs: Results | Schema | History | Favorites
+	// Bottom tabs: Results | History | Favorites
 	bottomTabs := container.NewAppTabs(
 		container.NewTabItem("Results", a.results.Container),
-		container.NewTabItem("Schema", a.schema.Container),
 		container.NewTabItem("History", a.history.Container),
 		container.NewTabItem("Favorites", a.favorites.Container),
 	)
 
-	// Right side: editor (top) | bottom tabs
-	rightSplit := container.NewVSplit(a.editor.Container, bottomTabs)
-	rightSplit.Offset = 0.4
+	// Top area: editor only by default, schema appears on demand
+	a.editorSchemaSplit = container.NewHSplit(a.editor.Container, a.schema.Container)
+	a.editorSchemaSplit.Offset = 0.75
+	a.topArea = container.NewStack(a.editor.Container)
+
+	a.schema.OnClose = func() { a.hideSchema() }
+
+	// Right side: top area | bottom tabs (minimized until query runs)
+	a.rightSplit = container.NewVSplit(a.topArea, bottomTabs)
+	a.rightSplit.Offset = 0.9
 
 	// Main: explorer (left) | right
-	mainSplit := container.NewHSplit(a.explorer.Container, rightSplit)
+	mainSplit := container.NewHSplit(a.explorer.Container, a.rightSplit)
 	mainSplit.Offset = 0.2
 
 	// Toolbar

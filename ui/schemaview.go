@@ -5,6 +5,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -20,6 +21,7 @@ type SchemaView struct {
 	titleBar *widget.Label
 	fields   []SchemaField
 
+	OnClose   func()
 	Container fyne.CanvasObject
 }
 
@@ -65,12 +67,18 @@ func NewSchemaView() *SchemaView {
 		}
 	}
 
-	s.table.SetColumnWidth(0, 200)
-	s.table.SetColumnWidth(1, 120)
-	s.table.SetColumnWidth(2, 100)
-	s.table.SetColumnWidth(3, 300)
+	s.table.SetColumnWidth(0, 140)
+	s.table.SetColumnWidth(1, 80)
+	s.table.SetColumnWidth(2, 80)
+	s.table.SetColumnWidth(3, 150)
 
-	s.Container = container.NewBorder(s.titleBar, nil, nil, nil, s.table)
+	closeBtn := widget.NewButtonWithIcon("", theme.Icon(theme.IconNameCancel), func() {
+		if s.OnClose != nil {
+			s.OnClose()
+		}
+	})
+	topRow := container.NewBorder(nil, nil, nil, closeBtn, nil)
+	s.Container = container.NewBorder(topRow, nil, nil, nil, s.table)
 	return s
 }
 
