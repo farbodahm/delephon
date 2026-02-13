@@ -29,6 +29,7 @@ type SQLEditor struct {
 	focused   bool
 	blinkOn   bool
 	onChanged func(string)
+	OnSubmit  func() // called on Cmd+Enter / Ctrl+Enter
 
 	// Selection state: anchor is where selection started, cursor is the other end.
 	hasSelection bool
@@ -738,8 +739,11 @@ func (e *SQLEditor) TypedShortcut(s fyne.Shortcut) {
 }
 
 func (e *SQLEditor) handleCustomShortcut(cs *desktop.CustomShortcut) {
-	// Ignore Ctrl/Cmd+Enter — handled by canvas shortcut in app.go
+	// Ctrl/Cmd+Enter → run query
 	if cs.KeyName == fyne.KeyReturn {
+		if e.OnSubmit != nil {
+			e.OnSubmit()
+		}
 		return
 	}
 

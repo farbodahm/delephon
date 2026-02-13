@@ -11,7 +11,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -461,18 +460,6 @@ func (a *App) BuildUI() fyne.CanvasObject {
 		widget.NewButtonWithIcon("Add Project", theme.Icon(theme.IconNameContentAdd), a.addProject),
 		layout.NewSpacer(),
 		widget.NewButtonWithIcon("", theme.Icon(theme.IconNameColorPalette), a.toggleTheme),
-	)
-
-	// Register Ctrl+Enter shortcut
-	a.window.Canvas().AddShortcut(
-		&desktop.CustomShortcut{KeyName: fyne.KeyReturn, Modifier: fyne.KeyModifierControl},
-		func(shortcut fyne.Shortcut) {
-			project := a.editor.GetCurrentProject()
-			sql := a.editor.GetCurrentSQL()
-			if project != "" && sql != "" {
-				go a.runQuery(project, sql)
-			}
-		},
 	)
 
 	return container.NewBorder(toolbar, nil, nil, nil, mainSplit)

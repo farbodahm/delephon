@@ -88,6 +88,7 @@ func (e *Editor) newTab() *container.TabItem {
 
 	e.mu.Lock()
 	editor.OnProjectNeeded = e.onProjectNeeded
+	editor.OnSubmit = func() { e.run() }
 	e.tabData[tab] = &queryTab{
 		editor:  editor,
 		project: e.projects.Selected,
