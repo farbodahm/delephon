@@ -51,14 +51,14 @@ type SQLEditor struct {
 	stopBlink   chan struct{}
 
 	// Autocomplete state.
-	completions      []string                       // full list: SQL keywords + column names
-	acProjectData    map[string]map[string][]string // project -> dataset -> []tables
-	acPrefix         string                         // prefix used for current filtering (for accept)
-	acFiltered       []string                       // filtered by current prefix
-	acVisible        bool
-	acSelected       int
-	acLoadRequested  map[string]bool         // projects we've already requested loading for
-	OnProjectNeeded  func(project string)    // callback: request loading data for a project
+	completions     []string                       // full list: SQL keywords + column names
+	acProjectData   map[string]map[string][]string // project -> dataset -> []tables
+	acPrefix        string                         // prefix used for current filtering (for accept)
+	acFiltered      []string                       // filtered by current prefix
+	acVisible       bool
+	acSelected      int
+	acLoadRequested map[string]bool      // projects we've already requested loading for
+	OnProjectNeeded func(project string) // callback: request loading data for a project
 
 	// AC rendering (canvas primitives, created in CreateRenderer).
 	acBg         *canvas.Rectangle
@@ -1110,8 +1110,6 @@ func tokenColorName(t chroma.TokenType) string {
 	return ""
 }
 
-// --- Autocomplete ---
-
 var sqlKeywords = []string{
 	// SQL keywords
 	"SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE",
@@ -1224,6 +1222,9 @@ func (e *SQLEditor) SetProjectData(data map[string]map[string][]string) {
 func (e *SQLEditor) dottedExprBeforeCursorLocked() []string {
 	line := e.lines[e.cursorRow]
 	col := e.cursorCol
+	if col > len(line) {
+		col = len(line)
+	}
 	start := col
 	for start > 0 {
 		b := line[start-1]
@@ -1512,8 +1513,6 @@ func (e *SQLEditor) acceptCompletion() {
 	e.refreshContent()
 	e.notifyChanged()
 }
-
-// --- Renderer ---
 
 type sqlEditorRenderer struct {
 	editor  *SQLEditor
