@@ -2,11 +2,13 @@ package ui
 
 import (
 	"image/color"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -14,6 +16,8 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 )
+
+const maxACDisplay = 8
 
 // SQLEditor is a custom TextGrid-based SQL editor with syntax highlighting.
 type SQLEditor struct {
@@ -45,6 +49,22 @@ type SQLEditor struct {
 	placeholder string
 	lexer       chroma.Lexer
 	stopBlink   chan struct{}
+
+	// Autocomplete state.
+	completions []string // full list: SQL keywords + column names
+	acFiltered  []string // filtered by current prefix
+	acVisible   bool
+	acSelected  int
+
+	// AC rendering (canvas primitives, created in CreateRenderer).
+	acBg         *canvas.Rectangle
+	acSelBg      *canvas.Rectangle
+	acTexts      [maxACDisplay]*canvas.Text
+	acItemHeight float32
+	acDropdownX  float32
+	acDropdownY  float32
+	acDropdownW  float32
+	acDropdownH  float32
 }
 
 const maxUndoStack = 500
@@ -394,6 +414,7 @@ func (e *SQLEditor) FocusGained() {
 }
 
 func (e *SQLEditor) FocusLost() {
+	e.hideACPopup()
 	e.stopBlinkTimer()
 	e.mu.Lock()
 	e.focused = false
@@ -416,9 +437,47 @@ func (e *SQLEditor) TypedRune(r rune) {
 	e.resetBlink()
 	e.refreshContent()
 	e.notifyChanged()
+	e.updateAutocomplete()
 }
 
 func (e *SQLEditor) TypedKey(ev *fyne.KeyEvent) {
+	// Intercept keys when autocomplete is visible.
+	e.mu.Lock()
+	acVis := e.acVisible
+	e.mu.Unlock()
+	if acVis {
+		switch ev.Name {
+		case fyne.KeyUp:
+			e.mu.Lock()
+			if e.acSelected > 0 {
+				e.acSelected--
+			}
+			e.mu.Unlock()
+			e.refreshAC()
+			return
+		case fyne.KeyDown, fyne.KeyTab:
+			e.mu.Lock()
+			maxIdx := len(e.acFiltered) - 1
+			if maxIdx > maxACDisplay-1 {
+				maxIdx = maxACDisplay - 1
+			}
+			if e.acSelected < maxIdx {
+				e.acSelected++
+			} else {
+				e.acSelected = 0
+			}
+			e.mu.Unlock()
+			e.refreshAC()
+			return
+		case fyne.KeyReturn:
+			e.acceptCompletion()
+			return
+		case fyne.KeyEscape:
+			e.hideACPopup()
+			return
+		}
+	}
+
 	e.mu.Lock()
 	edited := true
 	// Save undo state before destructive operations.
@@ -558,6 +617,7 @@ func (e *SQLEditor) TypedKey(ev *fyne.KeyEvent) {
 	e.refreshContent()
 	if edited {
 		e.notifyChanged()
+		e.updateAutocomplete()
 	}
 }
 
@@ -578,10 +638,29 @@ func (e *SQLEditor) clampPositionLocked(row, col int) (int, int) {
 }
 
 func (e *SQLEditor) Tapped(ev *fyne.PointEvent) {
+	// Check if tap is on an autocomplete item.
+	e.mu.Lock()
+	if e.acVisible {
+		pos := ev.Position
+		if pos.X >= e.acDropdownX && pos.X <= e.acDropdownX+e.acDropdownW &&
+			pos.Y >= e.acDropdownY && pos.Y <= e.acDropdownY+e.acDropdownH {
+			idx := int((pos.Y - e.acDropdownY) / e.acItemHeight)
+			if idx >= 0 && idx < len(e.acFiltered) && idx < maxACDisplay {
+				e.acSelected = idx
+				e.mu.Unlock()
+				e.acceptCompletion()
+				return
+			}
+		}
+	}
+	e.mu.Unlock()
+
 	c := fyne.CurrentApp().Driver().CanvasForObject(e)
 	if c != nil {
 		c.Focus(e)
 	}
+
+	e.hideACPopup()
 
 	row, col := e.grid.CursorLocationForPosition(ev.Position)
 	e.mu.Lock()
@@ -1027,16 +1106,328 @@ func tokenColorName(t chroma.TokenType) string {
 	return ""
 }
 
+// --- Autocomplete ---
+
+var sqlKeywords = []string{
+	// SQL keywords
+	"SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE",
+	"IS", "NULL", "AS", "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
+	"CROSS", "FULL", "GROUP", "BY", "ORDER", "ASC", "DESC", "LIMIT", "OFFSET",
+	"HAVING", "DISTINCT", "UNION", "ALL", "EXISTS", "CASE", "WHEN", "THEN",
+	"ELSE", "END", "CAST", "IF", "TRUE", "FALSE", "WITH", "OVER", "PARTITION",
+	"ROWS", "RANGE", "UNNEST", "EXCEPT", "INTERSECT", "INSERT", "INTO",
+	"VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "STRUCT", "ARRAY",
+
+	// Aggregate functions
+	"COUNT", "SUM", "AVG", "MIN", "MAX", "ANY_VALUE", "ARRAY_AGG",
+	"STRING_AGG", "COUNTIF", "LOGICAL_AND", "LOGICAL_OR", "APPROX_COUNT_DISTINCT",
+	"APPROX_QUANTILES", "APPROX_TOP_COUNT", "APPROX_TOP_SUM",
+
+	// Analytic / window functions
+	"ROW_NUMBER", "RANK", "DENSE_RANK", "PERCENT_RANK", "CUME_DIST",
+	"NTILE", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE",
+	"PERCENTILE_CONT", "PERCENTILE_DISC",
+
+	// Date / time functions
+	"CURRENT_DATE", "CURRENT_TIMESTAMP", "CURRENT_DATETIME", "CURRENT_TIME",
+	"DATE", "DATETIME", "TIME", "TIMESTAMP",
+	"DATE_ADD", "DATE_SUB", "DATE_DIFF", "DATE_TRUNC",
+	"DATETIME_ADD", "DATETIME_SUB", "DATETIME_DIFF", "DATETIME_TRUNC",
+	"TIMESTAMP_ADD", "TIMESTAMP_SUB", "TIMESTAMP_DIFF", "TIMESTAMP_TRUNC",
+	"TIME_ADD", "TIME_SUB", "TIME_DIFF", "TIME_TRUNC",
+	"EXTRACT", "FORMAT_DATE", "FORMAT_DATETIME", "FORMAT_TIMESTAMP", "FORMAT_TIME",
+	"PARSE_DATE", "PARSE_DATETIME", "PARSE_TIMESTAMP", "PARSE_TIME",
+	"UNIX_SECONDS", "UNIX_MILLIS", "UNIX_MICROS",
+	"TIMESTAMP_SECONDS", "TIMESTAMP_MILLIS", "TIMESTAMP_MICROS",
+
+	// String functions
+	"CONCAT", "LENGTH", "LOWER", "UPPER", "TRIM", "LTRIM", "RTRIM",
+	"SUBSTR", "SUBSTRING", "REPLACE", "REVERSE", "REPEAT",
+	"STARTS_WITH", "ENDS_WITH", "CONTAINS_SUBSTR",
+	"REGEXP_CONTAINS", "REGEXP_EXTRACT", "REGEXP_EXTRACT_ALL", "REGEXP_REPLACE",
+	"SPLIT", "FORMAT", "LPAD", "RPAD", "LEFT", "RIGHT",
+	"SAFE_CONVERT_BYTES_TO_STRING", "TO_CODE_POINTS", "CODE_POINTS_TO_STRING",
+	"NORMALIZE", "NORMALIZE_AND_CASEFOLD",
+	"BYTE_LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH",
+
+	// Null handling
+	"IFNULL", "NULLIF", "COALESCE",
+
+	// Conversion / casting
+	"SAFE_CAST",
+
+	// Math functions
+	"ABS", "SIGN", "ROUND", "TRUNC", "CEIL", "CEILING", "FLOOR",
+	"MOD", "DIV", "SAFE_DIVIDE", "SAFE_MULTIPLY", "SAFE_NEGATE", "SAFE_ADD", "SAFE_SUBTRACT",
+	"POWER", "POW", "SQRT", "EXP", "LN", "LOG", "LOG10", "LOG2",
+	"GREATEST", "LEAST", "IEEE_DIVIDE", "RAND", "GENERATE_ARRAY", "GENERATE_DATE_ARRAY",
+
+	// JSON functions
+	"JSON_EXTRACT", "JSON_EXTRACT_SCALAR", "JSON_EXTRACT_ARRAY",
+	"JSON_EXTRACT_STRING_ARRAY", "JSON_VALUE", "JSON_VALUE_ARRAY",
+	"JSON_QUERY", "JSON_QUERY_ARRAY", "TO_JSON_STRING", "TO_JSON",
+	"PARSE_JSON", "JSON_TYPE",
+
+	// Array functions
+	"ARRAY_LENGTH", "ARRAY_TO_STRING", "ARRAY_REVERSE", "ARRAY_CONCAT",
+	"GENERATE_ARRAY", "GENERATE_TIMESTAMP_ARRAY",
+
+	// Hash / fingerprint
+	"FARM_FINGERPRINT", "MD5", "SHA1", "SHA256", "SHA512",
+
+	// Other common functions
+	"GENERATE_UUID", "ERROR", "STRUCT",
+	"IF", "IIF", "NULLIF",
+}
+
+// SetCompletions merges SQL keywords with the provided items (e.g. column names)
+// and stores them sorted for autocomplete.
+func (e *SQLEditor) SetCompletions(items []string) {
+	seen := make(map[string]bool, len(sqlKeywords)+len(items))
+	var merged []string
+	for _, kw := range sqlKeywords {
+		upper := strings.ToUpper(kw)
+		if !seen[upper] {
+			seen[upper] = true
+			merged = append(merged, kw)
+		}
+	}
+	for _, item := range items {
+		if !seen[strings.ToUpper(item)] {
+			seen[strings.ToUpper(item)] = true
+			merged = append(merged, item)
+		}
+	}
+	sort.Strings(merged)
+	e.mu.Lock()
+	e.completions = merged
+	e.mu.Unlock()
+}
+
+// wordBeforeCursorLocked returns the word prefix left of the cursor. Caller must hold mu.
+func (e *SQLEditor) wordBeforeCursorLocked() string {
+	line := e.lines[e.cursorRow]
+	col := e.cursorCol
+	start := col
+	for start > 0 && isWordByte(line[start-1]) {
+		start--
+	}
+	return line[start:col]
+}
+
+// updateAutocomplete filters completions by the current prefix and shows/hides the popup.
+func (e *SQLEditor) updateAutocomplete() {
+	e.mu.Lock()
+	prefix := e.wordBeforeCursorLocked()
+	completions := e.completions
+	e.mu.Unlock()
+
+	if len(prefix) == 0 || len(completions) == 0 {
+		e.hideACPopup()
+		return
+	}
+
+	upperPrefix := strings.ToUpper(prefix)
+	var filtered []string
+	for _, c := range completions {
+		if strings.HasPrefix(strings.ToUpper(c), upperPrefix) && strings.ToUpper(c) != upperPrefix {
+			filtered = append(filtered, c)
+		}
+	}
+	if len(filtered) == 0 {
+		e.hideACPopup()
+		return
+	}
+
+	e.mu.Lock()
+	e.acFiltered = filtered
+	e.acSelected = 0
+	e.mu.Unlock()
+
+	e.showACPopup()
+}
+
+// showACPopup sets autocomplete visible and computes dropdown geometry.
+func (e *SQLEditor) showACPopup() {
+	e.mu.Lock()
+	e.acVisible = true
+	curRow := e.cursorRow
+	curCol := e.cursorCol
+	prefix := e.wordBeforeCursorLocked()
+	n := len(e.acFiltered)
+	if n > maxACDisplay {
+		n = maxACDisplay
+	}
+	e.mu.Unlock()
+
+	charSize := fyne.MeasureText("M", theme.TextSize(), fyne.TextStyle{Monospace: true})
+	itemH := charSize.Height + theme.Padding()
+
+	e.mu.Lock()
+	e.acDropdownX = float32(curCol-len(prefix)) * charSize.Width
+	e.acDropdownY = float32(curRow+1) * charSize.Height
+	e.acDropdownW = float32(220)
+	e.acDropdownH = float32(n) * itemH
+	e.acItemHeight = itemH
+	e.mu.Unlock()
+
+	e.refreshAC()
+}
+
+// hideACPopup hides the autocomplete dropdown.
+func (e *SQLEditor) hideACPopup() {
+	e.mu.Lock()
+	e.acVisible = false
+	e.mu.Unlock()
+	e.refreshAC()
+}
+
+// refreshAC updates the autocomplete canvas primitives.
+func (e *SQLEditor) refreshAC() {
+	e.mu.Lock()
+	visible := e.acVisible
+	var filtered []string
+	var selected int
+	var x, y, w, itemH float32
+	if visible {
+		filtered = make([]string, len(e.acFiltered))
+		copy(filtered, e.acFiltered)
+		selected = e.acSelected
+		x = e.acDropdownX
+		y = e.acDropdownY
+		w = e.acDropdownW
+		itemH = e.acItemHeight
+	}
+	bg := e.acBg
+	selBg := e.acSelBg
+	texts := e.acTexts
+	e.mu.Unlock()
+
+	// Canvas objects not yet created (renderer not initialized).
+	if bg == nil {
+		return
+	}
+
+	fyne.Do(func() {
+		if !visible || len(filtered) == 0 {
+			bg.Hide()
+			selBg.Hide()
+			for i := range texts {
+				if texts[i] != nil {
+					texts[i].Hide()
+				}
+			}
+			return
+		}
+
+		th := fyne.CurrentApp().Settings().Theme()
+		v := fyne.CurrentApp().Settings().ThemeVariant()
+
+		n := len(filtered)
+		if n > maxACDisplay {
+			n = maxACDisplay
+		}
+		h := float32(n) * itemH
+
+		// Background
+		bg.FillColor = th.Color(theme.ColorNameMenuBackground, v)
+		bg.StrokeColor = th.Color(theme.ColorNameSeparator, v)
+		bg.StrokeWidth = 1
+		bg.Resize(fyne.NewSize(w, h))
+		bg.Move(fyne.NewPos(x, y))
+		bg.Show()
+		bg.Refresh()
+
+		// Selection highlight
+		if selected >= 0 && selected < n {
+			selBg.FillColor = th.Color(theme.ColorNameSelection, v)
+			selBg.Resize(fyne.NewSize(w, itemH))
+			selBg.Move(fyne.NewPos(x, y+float32(selected)*itemH))
+			selBg.Show()
+			selBg.Refresh()
+		} else {
+			selBg.Hide()
+		}
+
+		// Text items
+		fgColor := th.Color(theme.ColorNameForeground, v)
+		pad := theme.Padding()
+		for i := 0; i < maxACDisplay; i++ {
+			if texts[i] == nil {
+				continue
+			}
+			if i < n {
+				texts[i].Text = filtered[i]
+				texts[i].Color = fgColor
+				texts[i].TextSize = theme.TextSize()
+				texts[i].Move(fyne.NewPos(x+pad, y+float32(i)*itemH))
+				texts[i].Show()
+				texts[i].Refresh()
+			} else {
+				texts[i].Hide()
+			}
+		}
+	})
+}
+
+// acceptCompletion inserts the remaining suffix of the selected completion at the cursor.
+func (e *SQLEditor) acceptCompletion() {
+	e.mu.Lock()
+	if !e.acVisible || len(e.acFiltered) == 0 {
+		e.mu.Unlock()
+		return
+	}
+	sel := e.acSelected
+	if sel < 0 || sel >= len(e.acFiltered) {
+		sel = 0
+	}
+	completion := e.acFiltered[sel]
+	prefix := e.wordBeforeCursorLocked()
+	suffix := completion[len(prefix):]
+
+	e.saveUndoLocked()
+	line := e.lines[e.cursorRow]
+	e.lines[e.cursorRow] = line[:e.cursorCol] + suffix + line[e.cursorCol:]
+	e.cursorCol += len(suffix)
+	e.mu.Unlock()
+
+	e.hideACPopup()
+	e.resetBlink()
+	e.refreshContent()
+	e.notifyChanged()
+}
+
 // --- Renderer ---
 
 type sqlEditorRenderer struct {
-	editor *SQLEditor
-	grid   *widget.TextGrid
+	editor  *SQLEditor
+	grid    *widget.TextGrid
+	objects []fyne.CanvasObject
 }
 
 func (e *SQLEditor) CreateRenderer() fyne.WidgetRenderer {
 	e.ExtendBaseWidget(e)
-	return &sqlEditorRenderer{editor: e, grid: e.grid}
+
+	// Create AC canvas primitives.
+	e.acBg = canvas.NewRectangle(color.Transparent)
+	e.acBg.Hide()
+	e.acSelBg = canvas.NewRectangle(color.Transparent)
+	e.acSelBg.Hide()
+	for i := range e.acTexts {
+		t := canvas.NewText("", color.White)
+		t.TextStyle = fyne.TextStyle{Monospace: true}
+		t.TextSize = theme.TextSize()
+		t.Hide()
+		e.acTexts[i] = t
+	}
+
+	objects := make([]fyne.CanvasObject, 0, 2+maxACDisplay+1)
+	objects = append(objects, e.grid, e.acBg, e.acSelBg)
+	for _, t := range e.acTexts {
+		objects = append(objects, t)
+	}
+
+	return &sqlEditorRenderer{editor: e, grid: e.grid, objects: objects}
 }
 
 func (r *sqlEditorRenderer) Layout(size fyne.Size) {
@@ -1049,7 +1440,7 @@ func (r *sqlEditorRenderer) MinSize() fyne.Size {
 }
 
 func (r *sqlEditorRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.grid}
+	return r.objects
 }
 
 func (r *sqlEditorRenderer) Refresh() {

@@ -162,3 +162,14 @@ func (e *Editor) SetSQL(sql string) {
 		})
 	}
 }
+
+// SetCompletions passes autocomplete items to the current tab's SQLEditor.
+func (e *Editor) SetCompletions(items []string) {
+	e.mu.Lock()
+	tab := e.tabs.Selected()
+	qt, ok := e.tabData[tab]
+	e.mu.Unlock()
+	if ok {
+		qt.editor.SetCompletions(items)
+	}
+}

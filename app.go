@@ -104,6 +104,7 @@ func (a *App) wireCallbacks() {
 			sort.Strings(projects)
 			a.explorer.SetAllProjects(projects)
 			a.editor.SetProjects(a.explorer.AllKnownProjects())
+			a.updateCompletions()
 		}()
 	}
 
@@ -132,6 +133,7 @@ func (a *App) wireCallbacks() {
 		}
 		wg.Wait()
 		a.explorer.CacheProjectData(project, result)
+		a.updateCompletions()
 	}
 
 	// Explorer: table selected -> show schema + generate SELECT query
@@ -153,6 +155,13 @@ func (a *App) wireCallbacks() {
 			}
 			a.schema.SetSchema(project, dataset, table, fields)
 			fyne.Do(func() { a.showSchema() })
+
+			// Pass column names + all known names to editor for autocomplete.
+			columnNames := make([]string, len(fields))
+			for i, f := range fields {
+				columnNames[i] = f.Name
+			}
+			a.updateCompletions(columnNames...)
 
 			// Generate SELECT query
 			fqn := fmt.Sprintf("`%s.%s.%s`", project, dataset, table)
@@ -312,6 +321,7 @@ func (a *App) LoadInitialProjects() {
 		a.refreshFavProjects()
 		a.refreshRecentProjects()
 		a.editor.SetProjects(a.explorer.AllKnownProjects())
+		a.updateCompletions()
 	}()
 }
 
@@ -330,6 +340,7 @@ func (a *App) refreshRecentProjects() {
 	}
 	a.explorer.SetRecentProjects(projects)
 	a.editor.SetProjects(a.explorer.AllKnownProjects())
+	a.updateCompletions()
 }
 
 func (a *App) partitionWhereClause(field, partType string) string {
@@ -461,6 +472,20 @@ func (a *App) showError(title string, err error) {
 	fyne.Do(func() {
 		dialog.ShowError(err, a.window)
 	})
+}
+
+// updateCompletions gathers all known names (projects, datasets, tables)
+// plus any extra items (e.g. column names) and sends them to the editor.
+func (a *App) updateCompletions(extra ...string) {
+	projects := a.explorer.AllKnownProjects()
+	datasets, tables := a.explorer.AllCachedNames()
+
+	all := make([]string, 0, len(projects)+len(datasets)+len(tables)+len(extra))
+	all = append(all, projects...)
+	all = append(all, datasets...)
+	all = append(all, tables...)
+	all = append(all, extra...)
+	a.editor.SetCompletions(all)
 }
 
 func (a *App) Close() {

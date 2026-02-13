@@ -594,6 +594,42 @@ func (e *Explorer) AddProject(project string) {
 	e.rebuildVisible()
 }
 
+// AllCachedNames returns deduplicated, sorted lists of all cached dataset and table names.
+func (e *Explorer) AllCachedNames() (datasets []string, tables []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	seenDS := make(map[string]bool)
+	seenTbl := make(map[string]bool)
+	for id, childNodes := range e.children {
+		kind := ""
+		if len(id) >= 2 {
+			kind = id[:1]
+		}
+		switch kind {
+		case "p":
+			// Children are datasets
+			for _, n := range childNodes {
+				if !seenDS[n.label] {
+					seenDS[n.label] = true
+					datasets = append(datasets, n.label)
+				}
+			}
+		case "d":
+			// Children are tables
+			for _, n := range childNodes {
+				if !seenTbl[n.label] {
+					seenTbl[n.label] = true
+					tables = append(tables, n.label)
+				}
+			}
+		}
+	}
+	sort.Strings(datasets)
+	sort.Strings(tables)
+	return
+}
+
 // AllKnownProjects returns a deduplicated, sorted list of all known projects.
 func (e *Explorer) AllKnownProjects() []string {
 	e.mu.Lock()
