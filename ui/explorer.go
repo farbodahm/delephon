@@ -91,6 +91,7 @@ type Explorer struct {
 	OnLoadAllProjects func()               // callback to load all projects from GCP
 	OnProjectSelected func(project string) // callback when a project node is clicked (set in editor)
 	OnSearchProject   func(project string) // callback: load all datasets+tables for a project
+	OnChildrenChanged func()               // callback: children were loaded/cached (for autocomplete refresh)
 
 	Container fyne.CanvasObject
 }
@@ -659,6 +660,36 @@ func (e *Explorer) AllKnownProjects() []string {
 	return result
 }
 
+// CachedHierarchy returns a project -> dataset -> []tables map from cached data.
+func (e *Explorer) CachedHierarchy() map[string]map[string][]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	result := make(map[string]map[string][]string)
+	for id, dsNodes := range e.children {
+		if len(id) < 2 || id[:1] != "p" {
+			continue
+		}
+		_, project, _, _ := ParseNodeID(id)
+		dsMap := make(map[string][]string)
+		for _, dsNode := range dsNodes {
+			_, _, dataset, _ := ParseNodeID(dsNode.id)
+			tblNodes, ok := e.children[dsNode.id]
+			if !ok {
+				dsMap[dataset] = nil
+				continue
+			}
+			tables := make([]string, len(tblNodes))
+			for i, t := range tblNodes {
+				tables[i] = t.label
+			}
+			dsMap[dataset] = tables
+		}
+		result[project] = dsMap
+	}
+	return result
+}
+
 func explorerNodeColor(node explorerNode) color.Color {
 	t := fyne.CurrentApp().Settings().Theme()
 	if node.isHeader {
@@ -777,6 +808,9 @@ func (e *Explorer) toggleBranch(id string) {
 
 		e.mu.Unlock()
 		fyne.Do(func() { e.list.Refresh() })
+		if e.OnChildrenChanged != nil {
+			e.OnChildrenChanged()
+		}
 	}()
 }
 

@@ -136,6 +136,16 @@ func (a *App) wireCallbacks() {
 		a.updateCompletions()
 	}
 
+	// Explorer: children loaded/cached → refresh completions
+	a.explorer.OnChildrenChanged = func() {
+		a.updateCompletions()
+	}
+
+	// Editor: project data needed for autocomplete → load datasets+tables
+	a.editor.SetOnProjectNeeded(func(project string) {
+		a.loadProjectDataForAutocomplete(project)
+	})
+
 	// Explorer: table selected -> show schema + generate SELECT query
 	a.explorer.OnTableSelected = func(project, dataset, table string) {
 		go func() {
@@ -486,6 +496,38 @@ func (a *App) updateCompletions(extra ...string) {
 	all = append(all, tables...)
 	all = append(all, extra...)
 	a.editor.SetCompletions(all)
+	a.editor.SetProjectData(a.explorer.CachedHierarchy())
+}
+
+// loadProjectDataForAutocomplete loads all datasets and tables for a project
+// and updates the editor's autocomplete data. Called when the editor detects
+// a dotted path referencing a project whose data isn't cached yet.
+func (a *App) loadProjectDataForAutocomplete(project string) {
+	datasets, err := a.bqMgr.ListDatasets(a.ctx, project)
+	if err != nil {
+		log.Printf("autocomplete: failed to list datasets for %s: %v", project, err)
+		return
+	}
+	sort.Strings(datasets)
+
+	result := make(map[string][]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, ds := range datasets {
+		ds := ds
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tables, _ := a.bqMgr.ListTables(a.ctx, project, ds)
+			sort.Strings(tables)
+			mu.Lock()
+			result[ds] = tables
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	a.explorer.CacheProjectData(project, result)
+	a.updateCompletions()
 }
 
 func (a *App) Close() {

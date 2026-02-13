@@ -51,10 +51,14 @@ type SQLEditor struct {
 	stopBlink   chan struct{}
 
 	// Autocomplete state.
-	completions []string // full list: SQL keywords + column names
-	acFiltered  []string // filtered by current prefix
-	acVisible   bool
-	acSelected  int
+	completions      []string                       // full list: SQL keywords + column names
+	acProjectData    map[string]map[string][]string // project -> dataset -> []tables
+	acPrefix         string                         // prefix used for current filtering (for accept)
+	acFiltered       []string                       // filtered by current prefix
+	acVisible        bool
+	acSelected       int
+	acLoadRequested  map[string]bool         // projects we've already requested loading for
+	OnProjectNeeded  func(project string)    // callback: request loading data for a project
 
 	// AC rendering (canvas primitives, created in CreateRenderer).
 	acBg         *canvas.Rectangle
@@ -1204,6 +1208,40 @@ func (e *SQLEditor) SetCompletions(items []string) {
 	e.mu.Unlock()
 }
 
+// SetProjectData stores the project hierarchy data for context-aware dotted-path completion.
+// It also re-triggers autocomplete so freshly loaded data appears immediately.
+func (e *SQLEditor) SetProjectData(data map[string]map[string][]string) {
+	e.mu.Lock()
+	e.acProjectData = data
+	e.acLoadRequested = make(map[string]bool)
+	e.mu.Unlock()
+	e.updateAutocomplete()
+}
+
+// dottedExprBeforeCursorLocked walks left from the cursor to extract a dotted expression
+// (e.g. "project.dataset.tab"). Returns nil if no dots are found (caller should use flat completion).
+// Caller must hold mu.
+func (e *SQLEditor) dottedExprBeforeCursorLocked() []string {
+	line := e.lines[e.cursorRow]
+	col := e.cursorCol
+	start := col
+	for start > 0 {
+		b := line[start-1]
+		if isWordByte(b) || b == '.' || b == '`' || b == '-' {
+			start--
+		} else {
+			break
+		}
+	}
+	expr := line[start:col]
+	// Strip backticks
+	expr = strings.ReplaceAll(expr, "`", "")
+	if !strings.Contains(expr, ".") {
+		return nil
+	}
+	return strings.Split(expr, ".")
+}
+
 // wordBeforeCursorLocked returns the word prefix left of the cursor. Caller must hold mu.
 func (e *SQLEditor) wordBeforeCursorLocked() string {
 	line := e.lines[e.cursorRow]
@@ -1218,8 +1256,86 @@ func (e *SQLEditor) wordBeforeCursorLocked() string {
 // updateAutocomplete filters completions by the current prefix and shows/hides the popup.
 func (e *SQLEditor) updateAutocomplete() {
 	e.mu.Lock()
+	parts := e.dottedExprBeforeCursorLocked()
+	projectData := e.acProjectData
+	e.mu.Unlock()
+
+	// Dotted-path branch: context-aware completion for project.dataset.table
+	if parts != nil && projectData != nil {
+		var candidates []string
+		var prefix string
+		var project string
+		switch len(parts) {
+		case 2:
+			// project.partial → show datasets
+			project = parts[0]
+			prefix = parts[1]
+			if dsMap, ok := projectData[project]; ok {
+				for ds := range dsMap {
+					candidates = append(candidates, ds)
+				}
+			}
+			sort.Strings(candidates)
+		case 3:
+			// project.dataset.partial → show tables
+			project = parts[0]
+			dataset := parts[1]
+			prefix = parts[2]
+			if dsMap, ok := projectData[project]; ok {
+				if tables, ok := dsMap[dataset]; ok {
+					candidates = tables
+				}
+			}
+		}
+
+		// If project not in cache, trigger async load
+		if project != "" {
+			if _, ok := projectData[project]; !ok {
+				e.mu.Lock()
+				if e.acLoadRequested == nil {
+					e.acLoadRequested = make(map[string]bool)
+				}
+				alreadyRequested := e.acLoadRequested[project]
+				if !alreadyRequested {
+					e.acLoadRequested[project] = true
+				}
+				fn := e.OnProjectNeeded
+				e.mu.Unlock()
+				if !alreadyRequested && fn != nil {
+					go fn(project)
+				}
+			}
+		}
+
+		if len(candidates) > 0 || prefix == "" {
+			upperPrefix := strings.ToUpper(prefix)
+			var filtered []string
+			for _, c := range candidates {
+				if strings.HasPrefix(strings.ToUpper(c), upperPrefix) {
+					if upperPrefix == "" || strings.ToUpper(c) != upperPrefix {
+						filtered = append(filtered, c)
+					}
+				}
+			}
+			if len(filtered) > 0 {
+				e.mu.Lock()
+				e.acPrefix = prefix
+				e.acFiltered = filtered
+				e.acSelected = 0
+				e.mu.Unlock()
+				e.showACPopup()
+				return
+			}
+		}
+		e.hideACPopup()
+		return
+	}
+
+	// Flat completion path
+	e.mu.Lock()
 	prefix := e.wordBeforeCursorLocked()
 	completions := e.completions
+	e.acPrefix = prefix
 	e.mu.Unlock()
 
 	if len(prefix) == 0 || len(completions) == 0 {
@@ -1253,7 +1369,7 @@ func (e *SQLEditor) showACPopup() {
 	e.acVisible = true
 	curRow := e.cursorRow
 	curCol := e.cursorCol
-	prefix := e.wordBeforeCursorLocked()
+	prefix := e.acPrefix
 	n := len(e.acFiltered)
 	if n > maxACDisplay {
 		n = maxACDisplay
@@ -1382,7 +1498,7 @@ func (e *SQLEditor) acceptCompletion() {
 		sel = 0
 	}
 	completion := e.acFiltered[sel]
-	prefix := e.wordBeforeCursorLocked()
+	prefix := e.acPrefix
 	suffix := completion[len(prefix):]
 
 	e.saveUndoLocked()
