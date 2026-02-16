@@ -65,3 +65,57 @@ func TestPartitionWhere_UnknownType(t *testing.T) {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
+
+func TestEnforceQueryLimit_NoLimit(t *testing.T) {
+	got := enforceQueryLimit("SELECT * FROM t")
+	if !strings.HasSuffix(got, "\nLIMIT 10") {
+		t.Errorf("expected LIMIT 10 appended, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_HigherLimit(t *testing.T) {
+	got := enforceQueryLimit("SELECT * FROM t LIMIT 1000")
+	if !strings.Contains(got, "LIMIT 10") {
+		t.Errorf("expected LIMIT 10, got %q", got)
+	}
+	if strings.Contains(got, "LIMIT 1000") {
+		t.Errorf("expected LIMIT 1000 to be replaced, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_ExactlyTen(t *testing.T) {
+	input := "SELECT * FROM t LIMIT 10"
+	got := enforceQueryLimit(input)
+	if !strings.Contains(got, "LIMIT 10") {
+		t.Errorf("expected LIMIT 10 preserved, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_LowerLimit(t *testing.T) {
+	got := enforceQueryLimit("SELECT * FROM t LIMIT 5")
+	if !strings.Contains(got, "LIMIT 10") {
+		t.Errorf("expected LIMIT replaced with 10, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_CaseInsensitive(t *testing.T) {
+	got := enforceQueryLimit("SELECT * FROM t limit 500")
+	if !strings.Contains(got, "LIMIT 10") {
+		t.Errorf("expected case-insensitive LIMIT replacement, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_TrailingSemicolon(t *testing.T) {
+	got := enforceQueryLimit("SELECT * FROM t;")
+	if !strings.HasSuffix(got, "\nLIMIT 10") {
+		t.Errorf("expected semicolon stripped and LIMIT 10 appended, got %q", got)
+	}
+}
+
+func TestEnforceQueryLimit_MultilineSQL(t *testing.T) {
+	input := "SELECT\n  id,\n  name\nFROM users\nWHERE active = true"
+	got := enforceQueryLimit(input)
+	if !strings.HasSuffix(got, "\nLIMIT 10") {
+		t.Errorf("expected LIMIT 10 appended to multiline SQL, got %q", got)
+	}
+}

@@ -23,6 +23,9 @@ import (
 	"github.com/farbodahm/delephon/ui"
 )
 
+// aiQueryLimit is the maximum number of rows that AI-generated queries will return.
+const aiQueryLimit = 10
+
 type App struct {
 	window fyne.Window
 	store  *store.Store
@@ -36,9 +39,9 @@ type App struct {
 	favorites *ui.Favorites
 	assistant *ui.Assistant
 
-	aiClient        *ai.Client
-	schemaCache     string                        // cached schema context for AI
-	tableSchemaCache map[string]*bq.TableSchema   // cached per-table schemas: "project.dataset.table" -> schema
+	aiClient         *ai.Client
+	schemaCache      string                     // cached schema context for AI
+	tableSchemaCache map[string]*bq.TableSchema // cached per-table schemas: "project.dataset.table" -> schema
 
 	topArea           *fyne.Container
 	editorSchemaSplit *container.Split
@@ -597,7 +600,7 @@ func (a *App) handleAIMessage(userMsg string) {
 
 	// Auto-run if SQL was found
 	if sql != "" {
-		sql = enforceLimitTen(sql)
+		sql = enforceQueryLimit(sql)
 		project := a.editor.GetCurrentProject()
 		if project == "" {
 			log.Print("ai: no project selected, skipping auto-run")
@@ -720,15 +723,15 @@ func (a *App) buildSchemaContext() string {
 	return result
 }
 
-// enforceLimitTen ensures the SQL has LIMIT 10 (no higher).
-func enforceLimitTen(sql string) string {
+// enforceQueryLimit ensures the SQL has a LIMIT clause capped at aiQueryLimit.
+func enforceQueryLimit(sql string) string {
 	limitRe := regexp.MustCompile(`(?i)\bLIMIT\s+(\d+)`)
 	matches := limitRe.FindStringSubmatch(sql)
+	limit := fmt.Sprintf("LIMIT %d", aiQueryLimit)
 	if len(matches) < 2 {
-		return strings.TrimRight(sql, " \t\n;") + "\nLIMIT 10"
+		return strings.TrimRight(sql, " \t\n;") + "\n" + limit
 	}
-	// Replace any existing LIMIT with 10
-	return limitRe.ReplaceAllString(sql, "LIMIT 10")
+	return limitRe.ReplaceAllString(sql, limit)
 }
 
 func (a *App) showAPIKeyDialog() {
