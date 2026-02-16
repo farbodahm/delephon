@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/farbodahm/delephon/ai"
 	"github.com/farbodahm/delephon/bq"
 	"github.com/farbodahm/delephon/store"
 	"github.com/farbodahm/delephon/ui"
@@ -31,6 +34,11 @@ type App struct {
 	schema    *ui.SchemaView
 	history   *ui.History
 	favorites *ui.Favorites
+	assistant *ui.Assistant
+
+	aiClient        *ai.Client
+	schemaCache     string                        // cached schema context for AI
+	tableSchemaCache map[string]*bq.TableSchema   // cached per-table schemas: "project.dataset.table" -> schema
 
 	topArea           *fyne.Container
 	editorSchemaSplit *container.Split
@@ -54,6 +62,7 @@ func NewApp(window fyne.Window, st *store.Store, ctx context.Context) *App {
 	a.schema = ui.NewSchemaView()
 	a.history = ui.NewHistory()
 	a.favorites = ui.NewFavorites()
+	a.assistant = ui.NewAssistant()
 
 	a.wireCallbacks()
 	return a
@@ -210,6 +219,16 @@ func (a *App) wireCallbacks() {
 	a.favorites.OnRefresh = func() {
 		go a.refreshFavorites()
 	}
+
+	// Assistant: send message
+	a.assistant.OnSendMessage = func(userMsg string) {
+		go a.handleAIMessage(userMsg)
+	}
+
+	// Assistant: settings dialog
+	a.assistant.SetOnShowSettings(func() {
+		a.showAPIKeyDialog()
+	})
 }
 
 func (a *App) runQuery(project, sqlText string) {
@@ -413,11 +432,12 @@ func (a *App) hideSchema() {
 }
 
 func (a *App) BuildUI() fyne.CanvasObject {
-	// Bottom tabs: Results | History | Favorites
+	// Bottom tabs: Results | History | Favorites | AI Assistant
 	bottomTabs := container.NewAppTabs(
 		container.NewTabItem("Results", a.results.Container),
 		container.NewTabItem("History", a.history.Container),
 		container.NewTabItem("Favorites", a.favorites.Container),
+		container.NewTabItem("AI Assistant", a.assistant.Container),
 	)
 
 	// Top area: editor only by default, schema appears on demand
@@ -515,6 +535,227 @@ func (a *App) loadProjectDataForAutocomplete(project string) {
 	wg.Wait()
 	a.explorer.CacheProjectData(project, result)
 	a.updateCompletions()
+}
+
+func (a *App) handleAIMessage(userMsg string) {
+	log.Printf("ai: user message: %s", userMsg)
+	a.assistant.AddMessage("user", userMsg, "")
+	a.assistant.SetStatus("Initializing...")
+
+	// Initialize AI client lazily
+	if a.aiClient == nil {
+		apiKey, _ := a.store.GetSetting("anthropic_api_key")
+		if apiKey != "" {
+			log.Print("ai: using API key from settings")
+			a.aiClient = ai.NewWithKey(apiKey)
+		} else {
+			log.Print("ai: trying ANTHROPIC_API_KEY env var")
+			client, err := ai.New()
+			if err != nil {
+				log.Printf("ai: no API key available: %v", err)
+				a.assistant.SetStatus("")
+				a.assistant.AddMessage("assistant", "Please set your Anthropic API key via the Settings button or ANTHROPIC_API_KEY environment variable.", "")
+				return
+			}
+			a.aiClient = client
+		}
+	}
+
+	// Build schema context
+	a.assistant.SetStatus("Gathering schema from favorite projects...")
+	schemaCtx := a.buildSchemaContext()
+	log.Printf("ai: schema context length: %d chars", len(schemaCtx))
+
+	systemPrompt := "You are a BigQuery SQL expert. Generate SQL queries based on the user's description. " +
+		"Always use fully-qualified table names (`project.dataset.table`). " +
+		"Return SQL in a ```sql code block. " +
+		"Be concise in your explanations.\n\n" +
+		"Available schemas:\n" + schemaCtx
+
+	// Build conversation history from assistant messages
+	msgs := a.assistant.Messages()
+	aiMsgs := make([]ai.Message, len(msgs))
+	for i, m := range msgs {
+		aiMsgs[i] = ai.Message{Role: m.Role, Content: m.Content}
+	}
+
+	log.Printf("ai: sending %d messages to Claude", len(aiMsgs))
+	a.assistant.SetStatus("Sending to Claude...")
+	resp, err := a.aiClient.Chat(a.ctx, systemPrompt, aiMsgs)
+	if err != nil {
+		log.Printf("ai: Claude API error: %v", err)
+		a.assistant.SetStatus("")
+		a.assistant.AddMessage("assistant", fmt.Sprintf("Error: %v", err), "")
+		return
+	}
+	log.Printf("ai: got response (%d chars)", len(resp))
+
+	// Extract SQL from response
+	sql := ui.ExtractSQL(resp)
+	a.assistant.AddMessage("assistant", resp, sql)
+	a.assistant.SetStatus("")
+
+	// Auto-run if SQL was found
+	if sql != "" {
+		sql = enforceLimitTen(sql)
+		project := a.editor.GetCurrentProject()
+		if project == "" {
+			log.Print("ai: no project selected, skipping auto-run")
+			a.assistant.SetStatus("No project selected. Please select a project in the editor.")
+			return
+		}
+		log.Printf("ai: auto-running query on project %s", project)
+		a.assistant.SetStatus("Running generated query...")
+		a.runQuery(project, sql)
+		a.assistant.SetStatus("")
+		fyne.Do(func() { a.rightSplit.SetOffset(0.4) })
+	} else {
+		log.Print("ai: no SQL block found in response")
+	}
+}
+
+func (a *App) buildSchemaContext() string {
+	if a.schemaCache != "" {
+		log.Print("ai: using cached schema context")
+		return a.schemaCache
+	}
+
+	if a.tableSchemaCache == nil {
+		a.tableSchemaCache = make(map[string]*bq.TableSchema)
+	}
+
+	favProjects, err := a.store.ListFavoriteProjects()
+	if err != nil || len(favProjects) == 0 {
+		log.Print("ai: no favorite projects for schema context")
+		return "(No favorite projects found. Star a project to provide schema context.)"
+	}
+	log.Printf("ai: building schema for %d favorite projects", len(favProjects))
+
+	hierarchy := a.explorer.CachedHierarchy()
+
+	// Collect all tables that need schema fetching
+	type tableRef struct {
+		project, dataset, table string
+	}
+	var toFetch []tableRef
+	for _, project := range favProjects {
+		dsMap, ok := hierarchy[project]
+		if !ok {
+			a.loadProjectDataForAutocomplete(project)
+			hierarchy = a.explorer.CachedHierarchy()
+			dsMap = hierarchy[project]
+		}
+		if dsMap == nil {
+			continue
+		}
+		for dataset, tables := range dsMap {
+			for _, table := range tables {
+				key := project + "." + dataset + "." + table
+				if _, cached := a.tableSchemaCache[key]; !cached {
+					toFetch = append(toFetch, tableRef{project, dataset, table})
+				}
+			}
+		}
+	}
+
+	// Fetch uncached schemas in parallel with bounded concurrency
+	if len(toFetch) > 0 {
+		log.Printf("ai: fetching schemas for %d tables", len(toFetch))
+		sem := make(chan struct{}, 10) // max 10 concurrent requests
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ref := range toFetch {
+			ref := ref
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				schema, err := a.bqMgr.GetTableSchema(a.ctx, ref.project, ref.dataset, ref.table)
+				key := ref.project + "." + ref.dataset + "." + ref.table
+				mu.Lock()
+				if err == nil {
+					a.tableSchemaCache[key] = schema
+				} else {
+					a.tableSchemaCache[key] = nil // mark as attempted
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		log.Printf("ai: fetched %d table schemas", len(toFetch))
+	}
+
+	// Build the context string from cached data
+	var b strings.Builder
+	for _, project := range favProjects {
+		dsMap := hierarchy[project]
+		if dsMap == nil {
+			continue
+		}
+		fmt.Fprintf(&b, "Project: %s\n", project)
+		for dataset, tables := range dsMap {
+			fmt.Fprintf(&b, "  Dataset: %s\n", dataset)
+			for _, table := range tables {
+				key := project + "." + dataset + "." + table
+				schema := a.tableSchemaCache[key]
+				if schema == nil {
+					fmt.Fprintf(&b, "    Table: %s\n", table)
+					continue
+				}
+				cols := make([]string, len(schema.Fields))
+				for i, f := range schema.Fields {
+					cols[i] = f.Name + " " + f.Type
+				}
+				fmt.Fprintf(&b, "    Table: %s (columns: %s)\n", table, strings.Join(cols, ", "))
+			}
+		}
+	}
+
+	result := b.String()
+	if result == "" {
+		return "(No schema data available. Star a project and expand its datasets.)"
+	}
+	a.schemaCache = result
+	return result
+}
+
+// enforceLimitTen ensures the SQL has LIMIT 10 (no higher).
+func enforceLimitTen(sql string) string {
+	limitRe := regexp.MustCompile(`(?i)\bLIMIT\s+(\d+)`)
+	matches := limitRe.FindStringSubmatch(sql)
+	if len(matches) < 2 {
+		return strings.TrimRight(sql, " \t\n;") + "\nLIMIT 10"
+	}
+	// Replace any existing LIMIT with 10
+	return limitRe.ReplaceAllString(sql, "LIMIT 10")
+}
+
+func (a *App) showAPIKeyDialog() {
+	currentKey, _ := a.store.GetSetting("anthropic_api_key")
+	entry := widget.NewPasswordEntry()
+	entry.SetText(currentKey)
+	entry.SetPlaceHolder("sk-ant-...")
+	dialog.ShowForm("Anthropic API Key", "Save", "Cancel",
+		[]*widget.FormItem{widget.NewFormItem("API Key", entry)},
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			key := strings.TrimSpace(entry.Text)
+			if err := a.store.SetSetting("anthropic_api_key", key); err != nil {
+				a.showError("Settings Error", err)
+				return
+			}
+			// Reset AI client so it picks up the new key
+			if key != "" {
+				a.aiClient = ai.NewWithKey(key)
+			} else {
+				a.aiClient = nil
+			}
+		},
+		a.window,
+	)
 }
 
 func (a *App) Close() {

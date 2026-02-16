@@ -7,6 +7,8 @@ toolchain go1.24.13
 require (
 	cloud.google.com/go/bigquery v1.73.1
 	fyne.io/fyne/v2 v2.7.2
+	github.com/alecthomas/chroma/v2 v2.23.1
+	github.com/anthropics/anthropic-sdk-go v1.22.1
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
 	golang.org/x/oauth2 v0.35.0
@@ -26,7 +28,6 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
 	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/alecthomas/chroma/v2 v2.23.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -97,6 +98,10 @@ require (
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
