@@ -91,6 +91,7 @@ type Explorer struct {
 	OnLoadAllProjects func()               // callback to load all projects from GCP
 	OnProjectSelected func(project string) // callback when a project node is clicked (set in editor)
 	OnSearchProject   func(project string) // callback: load all datasets+tables for a project
+	OnChildrenChanged func()               // callback: children were loaded/cached (for autocomplete refresh)
 
 	Container fyne.CanvasObject
 }
@@ -594,6 +595,42 @@ func (e *Explorer) AddProject(project string) {
 	e.rebuildVisible()
 }
 
+// AllCachedNames returns deduplicated, sorted lists of all cached dataset and table names.
+func (e *Explorer) AllCachedNames() (datasets []string, tables []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	seenDS := make(map[string]bool)
+	seenTbl := make(map[string]bool)
+	for id, childNodes := range e.children {
+		kind := ""
+		if len(id) >= 2 {
+			kind = id[:1]
+		}
+		switch kind {
+		case "p":
+			// Children are datasets
+			for _, n := range childNodes {
+				if !seenDS[n.label] {
+					seenDS[n.label] = true
+					datasets = append(datasets, n.label)
+				}
+			}
+		case "d":
+			// Children are tables
+			for _, n := range childNodes {
+				if !seenTbl[n.label] {
+					seenTbl[n.label] = true
+					tables = append(tables, n.label)
+				}
+			}
+		}
+	}
+	sort.Strings(datasets)
+	sort.Strings(tables)
+	return
+}
+
 // AllKnownProjects returns a deduplicated, sorted list of all known projects.
 func (e *Explorer) AllKnownProjects() []string {
 	e.mu.Lock()
@@ -620,6 +657,36 @@ func (e *Explorer) AllKnownProjects() []string {
 		}
 	}
 	sort.Strings(result)
+	return result
+}
+
+// CachedHierarchy returns a project -> dataset -> []tables map from cached data.
+func (e *Explorer) CachedHierarchy() map[string]map[string][]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	result := make(map[string]map[string][]string)
+	for id, dsNodes := range e.children {
+		if len(id) < 2 || id[:1] != "p" {
+			continue
+		}
+		_, project, _, _ := ParseNodeID(id)
+		dsMap := make(map[string][]string)
+		for _, dsNode := range dsNodes {
+			_, _, dataset, _ := ParseNodeID(dsNode.id)
+			tblNodes, ok := e.children[dsNode.id]
+			if !ok {
+				dsMap[dataset] = nil
+				continue
+			}
+			tables := make([]string, len(tblNodes))
+			for i, t := range tblNodes {
+				tables[i] = t.label
+			}
+			dsMap[dataset] = tables
+		}
+		result[project] = dsMap
+	}
 	return result
 }
 
@@ -741,6 +808,9 @@ func (e *Explorer) toggleBranch(id string) {
 
 		e.mu.Unlock()
 		fyne.Do(func() { e.list.Refresh() })
+		if e.OnChildrenChanged != nil {
+			e.OnChildrenChanged()
+		}
 	}()
 }
 

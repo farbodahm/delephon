@@ -13,7 +13,9 @@ I wanted a lightweight, native app that would let me quickly browse my BigQuery 
 - **Smart project explorer** — favorites and recently queried projects show up instantly, all projects load on demand
 - **Search projects & tables** — find any table across your starred and recent projects; matching tables surface the project to the top
 - **Background caching** — datasets and tables load in parallel behind the scenes, so the second search is instant
-- **Query editor** — multi-tab SQL editor with Ctrl+Enter to run
+- **Query editor** — multi-tab SQL editor with Cmd+Enter / Ctrl+Enter to run
+- **Context-aware autocomplete** — type `project.` to see datasets, `project.dataset.` to see tables; data loads automatically in the background when needed
+- **SQL autocomplete** — SQL keywords, function names, project/dataset/table names, and column names complete as you type
 - **Auto-generated queries** — click a table to get a `SELECT *` with partition filter pre-filled
 - **Schema viewer** — inspect table columns, types, and descriptions
 - **Query history** — browse and re-run past queries

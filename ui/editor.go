@@ -24,9 +24,10 @@ type Editor struct {
 	runBtn   *widget.Button
 	stopBtn  *widget.Button
 
-	mu       sync.Mutex
-	tabData  map[*container.TabItem]*queryTab
-	tabCount int
+	mu              sync.Mutex
+	tabData         map[*container.TabItem]*queryTab
+	tabCount        int
+	onProjectNeeded func(project string)
 
 	RunQuery RunQueryFunc
 	OnStop   func()
@@ -86,6 +87,8 @@ func (e *Editor) newTab() *container.TabItem {
 	tab := container.NewTabItem(fmt.Sprintf("Query %d", e.tabCount), editor)
 
 	e.mu.Lock()
+	editor.OnProjectNeeded = e.onProjectNeeded
+	editor.OnSubmit = func() { e.run() }
 	e.tabData[tab] = &queryTab{
 		editor:  editor,
 		project: e.projects.Selected,
@@ -160,5 +163,37 @@ func (e *Editor) SetSQL(sql string) {
 		fyne.Do(func() {
 			qt.editor.SetText(sql)
 		})
+	}
+}
+
+// SetCompletions passes autocomplete items to the current tab's SQLEditor.
+func (e *Editor) SetCompletions(items []string) {
+	e.mu.Lock()
+	tab := e.tabs.Selected()
+	qt, ok := e.tabData[tab]
+	e.mu.Unlock()
+	if ok {
+		qt.editor.SetCompletions(items)
+	}
+}
+
+// SetOnProjectNeeded sets the callback for when the editor needs project data loaded.
+func (e *Editor) SetOnProjectNeeded(fn func(project string)) {
+	e.mu.Lock()
+	e.onProjectNeeded = fn
+	for _, qt := range e.tabData {
+		qt.editor.OnProjectNeeded = fn
+	}
+	e.mu.Unlock()
+}
+
+// SetProjectData passes project hierarchy data to the current tab's SQLEditor.
+func (e *Editor) SetProjectData(data map[string]map[string][]string) {
+	e.mu.Lock()
+	tab := e.tabs.Selected()
+	qt, ok := e.tabData[tab]
+	e.mu.Unlock()
+	if ok {
+		qt.editor.SetProjectData(data)
 	}
 }

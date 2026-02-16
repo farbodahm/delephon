@@ -11,7 +11,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -104,6 +103,7 @@ func (a *App) wireCallbacks() {
 			sort.Strings(projects)
 			a.explorer.SetAllProjects(projects)
 			a.editor.SetProjects(a.explorer.AllKnownProjects())
+			a.updateCompletions()
 		}()
 	}
 
@@ -132,7 +132,18 @@ func (a *App) wireCallbacks() {
 		}
 		wg.Wait()
 		a.explorer.CacheProjectData(project, result)
+		a.updateCompletions()
 	}
+
+	// Explorer: children loaded/cached → refresh completions
+	a.explorer.OnChildrenChanged = func() {
+		a.updateCompletions()
+	}
+
+	// Editor: project data needed for autocomplete → load datasets+tables
+	a.editor.SetOnProjectNeeded(func(project string) {
+		a.loadProjectDataForAutocomplete(project)
+	})
 
 	// Explorer: table selected -> show schema + generate SELECT query
 	a.explorer.OnTableSelected = func(project, dataset, table string) {
@@ -153,6 +164,13 @@ func (a *App) wireCallbacks() {
 			}
 			a.schema.SetSchema(project, dataset, table, fields)
 			fyne.Do(func() { a.showSchema() })
+
+			// Pass column names + all known names to editor for autocomplete.
+			columnNames := make([]string, len(fields))
+			for i, f := range fields {
+				columnNames[i] = f.Name
+			}
+			a.updateCompletions(columnNames...)
 
 			// Generate SELECT query
 			fqn := fmt.Sprintf("`%s.%s.%s`", project, dataset, table)
@@ -312,6 +330,7 @@ func (a *App) LoadInitialProjects() {
 		a.refreshFavProjects()
 		a.refreshRecentProjects()
 		a.editor.SetProjects(a.explorer.AllKnownProjects())
+		a.updateCompletions()
 	}()
 }
 
@@ -330,6 +349,7 @@ func (a *App) refreshRecentProjects() {
 	}
 	a.explorer.SetRecentProjects(projects)
 	a.editor.SetProjects(a.explorer.AllKnownProjects())
+	a.updateCompletions()
 }
 
 func (a *App) partitionWhereClause(field, partType string) string {
@@ -442,18 +462,6 @@ func (a *App) BuildUI() fyne.CanvasObject {
 		widget.NewButtonWithIcon("", theme.Icon(theme.IconNameColorPalette), a.toggleTheme),
 	)
 
-	// Register Ctrl+Enter shortcut
-	a.window.Canvas().AddShortcut(
-		&desktop.CustomShortcut{KeyName: fyne.KeyReturn, Modifier: fyne.KeyModifierControl},
-		func(shortcut fyne.Shortcut) {
-			project := a.editor.GetCurrentProject()
-			sql := a.editor.GetCurrentSQL()
-			if project != "" && sql != "" {
-				go a.runQuery(project, sql)
-			}
-		},
-	)
-
 	return container.NewBorder(toolbar, nil, nil, nil, mainSplit)
 }
 
@@ -461,6 +469,52 @@ func (a *App) showError(title string, err error) {
 	fyne.Do(func() {
 		dialog.ShowError(err, a.window)
 	})
+}
+
+// updateCompletions gathers all known names (projects, datasets, tables)
+// plus any extra items (e.g. column names) and sends them to the editor.
+func (a *App) updateCompletions(extra ...string) {
+	projects := a.explorer.AllKnownProjects()
+	datasets, tables := a.explorer.AllCachedNames()
+
+	all := make([]string, 0, len(projects)+len(datasets)+len(tables)+len(extra))
+	all = append(all, projects...)
+	all = append(all, datasets...)
+	all = append(all, tables...)
+	all = append(all, extra...)
+	a.editor.SetCompletions(all)
+	a.editor.SetProjectData(a.explorer.CachedHierarchy())
+}
+
+// loadProjectDataForAutocomplete loads all datasets and tables for a project
+// and updates the editor's autocomplete data. Called when the editor detects
+// a dotted path referencing a project whose data isn't cached yet.
+func (a *App) loadProjectDataForAutocomplete(project string) {
+	datasets, err := a.bqMgr.ListDatasets(a.ctx, project)
+	if err != nil {
+		log.Printf("autocomplete: failed to list datasets for %s: %v", project, err)
+		return
+	}
+	sort.Strings(datasets)
+
+	result := make(map[string][]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, ds := range datasets {
+		ds := ds
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tables, _ := a.bqMgr.ListTables(a.ctx, project, ds)
+			sort.Strings(tables)
+			mu.Lock()
+			result[ds] = tables
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	a.explorer.CacheProjectData(project, result)
+	a.updateCompletions()
 }
 
 func (a *App) Close() {
