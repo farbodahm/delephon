@@ -64,5 +64,4 @@ jobs:
             --title "${{ github.ref_name }}" \
             --generate-notes \
             artifacts/delephon-darwin-arm64/delephon-darwin-arm64 \
-            artifacts/delephon-darwin-amd64/delephon-darwin-amd64 \
             artifacts/delephon-linux-amd64/delephon-linux-amd64
