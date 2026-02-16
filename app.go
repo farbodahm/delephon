@@ -582,9 +582,10 @@ func (a *App) handleAIMessage(userMsg string) {
 		aiMsgs[i] = ai.Message{Role: m.Role, Content: m.Content}
 	}
 
-	log.Printf("ai: sending %d messages to Claude", len(aiMsgs))
+	model, _ := a.store.GetSetting("anthropic_model")
+	log.Printf("ai: sending %d messages to Claude (model=%s)", len(aiMsgs), model)
 	a.assistant.SetStatus("Sending to Claude...")
-	resp, err := a.aiClient.Chat(a.ctx, systemPrompt, aiMsgs)
+	resp, err := a.aiClient.Chat(a.ctx, model, systemPrompt, aiMsgs)
 	if err != nil {
 		log.Printf("ai: Claude API error: %v", err)
 		a.assistant.SetStatus("")
@@ -736,17 +737,57 @@ func enforceQueryLimit(sql string) string {
 
 func (a *App) showAPIKeyDialog() {
 	currentKey, _ := a.store.GetSetting("anthropic_api_key")
-	entry := widget.NewPasswordEntry()
-	entry.SetText(currentKey)
-	entry.SetPlaceHolder("sk-ant-...")
-	dialog.ShowForm("Anthropic API Key", "Save", "Cancel",
-		[]*widget.FormItem{widget.NewFormItem("API Key", entry)},
+	keyEntry := widget.NewPasswordEntry()
+	keyEntry.SetText(currentKey)
+	keyEntry.SetPlaceHolder("sk-ant-...")
+
+	currentModel, _ := a.store.GetSetting("anthropic_model")
+
+	// Ensure AI client is initialized if a key is available
+	if a.aiClient == nil {
+		if currentKey != "" {
+			log.Printf("ai settings: initializing client from stored API key")
+			a.aiClient = ai.NewWithKey(currentKey)
+		} else if envClient, err := ai.New(); err == nil {
+			log.Printf("ai settings: initializing client from ANTHROPIC_API_KEY env var")
+			a.aiClient = envClient
+		} else {
+			log.Printf("ai settings: no API key available (no stored key, env var not set)")
+		}
+	}
+
+	models := []string{"default"}
+	if a.aiClient != nil {
+		log.Printf("ai settings: fetching models from API...")
+		if fetched, err := a.aiClient.ListModels(a.ctx); err == nil && len(fetched) > 0 {
+			log.Printf("ai settings: got %d models from API: %v", len(fetched), fetched)
+			models = fetched
+		} else if err != nil {
+			log.Printf("ai settings: failed to fetch models: %v", err)
+		}
+	}
+	modelSelect := widget.NewSelect(models, nil)
+	if currentModel != "" {
+		modelSelect.SetSelected(currentModel)
+	} else if len(models) > 0 {
+		modelSelect.SetSelected(models[0])
+	}
+
+	dialog.ShowForm("AI Assistant Settings", "Save", "Cancel",
+		[]*widget.FormItem{
+			widget.NewFormItem("API Key", keyEntry),
+			widget.NewFormItem("Model", modelSelect),
+		},
 		func(ok bool) {
 			if !ok {
 				return
 			}
-			key := strings.TrimSpace(entry.Text)
+			key := strings.TrimSpace(keyEntry.Text)
 			if err := a.store.SetSetting("anthropic_api_key", key); err != nil {
+				a.showError("Settings Error", err)
+				return
+			}
+			if err := a.store.SetSetting("anthropic_model", modelSelect.Selected); err != nil {
 				a.showError("Settings Error", err)
 				return
 			}

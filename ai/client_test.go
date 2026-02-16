@@ -68,8 +68,9 @@ func TestConvertMessages_UnknownRoleDefaultsToUser(t *testing.T) {
 	}
 }
 
-func TestModel(t *testing.T) {
-	if model == "" {
-		t.Error("model constant should not be empty")
+func TestNewWithKey_CachedModelsEmpty(t *testing.T) {
+	c := NewWithKey("sk-test-key")
+	if len(c.cachedModels) != 0 {
+		t.Error("expected empty cached models on new client")
 	}
 }
