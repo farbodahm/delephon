@@ -11,6 +11,7 @@ I wanted a lightweight, native app that would let me quickly browse my BigQuery 
 ## Features
 
 - **Smart project explorer** — favorites and recently queried projects show up instantly, all projects load on demand
+- **AI Assistant** — describe what you want to query in plain English, and Claude generates BigQuery SQL using your table schemas as context
 - **Search projects & tables** — find any table across your starred and recent projects; matching tables surface the project to the top
 - **Background caching** — datasets and tables load in parallel behind the scenes, so the second search is instant
 - **Query editor** — multi-tab SQL editor with Cmd+Enter / Ctrl+Enter to run
