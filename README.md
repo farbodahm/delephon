@@ -1,6 +1,10 @@
 # Delephon
 
-A native desktop BigQuery client built with Go and Fyne. 
+A native desktop BigQuery client built with Go and Fyne.
+
+<img src="screenshots/delephon-2.png" alt="Query editor with results and schema" width="800">
+
+<img src="screenshots/delephon-1.png" alt="AI Assistant generating SQL" width="800">
 
 ## Where the idea came from
 
