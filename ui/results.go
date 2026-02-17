@@ -2,9 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -31,23 +34,42 @@ func NewResults() *Results {
 			return len(r.rows), len(r.columns)
 		},
 		func() fyne.CanvasObject {
-			return widget.NewLabel("")
+			txt := canvas.NewText("", color.White)
+			txt.TextSize = theme.Size(theme.SizeNameText)
+			return txt
 		},
 		func(id widget.TableCellID, obj fyne.CanvasObject) {
-			label := obj.(*widget.Label)
+			txt := obj.(*canvas.Text)
+			txt.TextSize = theme.Size(theme.SizeNameText)
+			txt.Color = theme.Color(theme.ColorNameForeground)
 			if id.Row < len(r.rows) && id.Col < len(r.rows[id.Row]) {
-				label.SetText(r.rows[id.Row][id.Col])
+				txt.Text = r.rows[id.Row][id.Col]
+			} else {
+				txt.Text = ""
 			}
+			txt.Refresh()
 		},
 	)
 
+	r.table.CreateHeader = func() fyne.CanvasObject {
+		txt := canvas.NewText("", color.White)
+		txt.TextSize = theme.Size(theme.SizeNameText)
+		txt.TextStyle = fyne.TextStyle{Bold: true}
+		return txt
+	}
 	r.table.UpdateHeader = func(id widget.TableCellID, template fyne.CanvasObject) {
-		label := template.(*widget.Label)
+		txt := template.(*canvas.Text)
+		txt.TextSize = theme.Size(theme.SizeNameText)
+		txt.Color = theme.Color(theme.ColorNameForeground)
+		txt.TextStyle = fyne.TextStyle{Bold: true}
 		if id.Row < 0 && id.Col >= 0 && id.Col < len(r.columns) {
-			label.SetText(r.columns[id.Col])
+			txt.Text = r.columns[id.Col]
 		} else if id.Col < 0 && id.Row >= 0 {
-			label.SetText(fmt.Sprintf("%d", id.Row+1))
+			txt.Text = fmt.Sprintf("%d", id.Row+1)
+		} else {
+			txt.Text = ""
 		}
+		txt.Refresh()
 	}
 
 	r.Container = container.NewBorder(nil, r.statusBar, nil, nil, r.table)
