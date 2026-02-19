@@ -94,7 +94,7 @@ var (
 func NewSQLEditor() *SQLEditor {
 	grid := widget.NewTextGrid()
 	grid.TabWidth = 4
-	grid.Scroll = fyne.ScrollNone
+	grid.Scroll = fyne.ScrollBoth
 
 	e := &SQLEditor{
 		grid:  grid,
@@ -1555,7 +1555,9 @@ func (r *sqlEditorRenderer) Layout(size fyne.Size) {
 }
 
 func (r *sqlEditorRenderer) MinSize() fyne.Size {
-	return r.grid.MinSize()
+	// Return a small fixed minimum so the editor doesn't grow unbounded
+	// with content. The actual size is determined by the parent layout.
+	return fyne.NewSize(200, 100)
 }
 
 func (r *sqlEditorRenderer) Objects() []fyne.CanvasObject {
