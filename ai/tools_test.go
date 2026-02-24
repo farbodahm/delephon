@@ -95,6 +95,35 @@ func TestExecuteTool_ListTables(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_GetAllTables(t *testing.T) {
+	called := false
+	executor := ToolExecutor{
+		GetAllTables: func(ctx context.Context) (string, error) {
+			called = true
+			return "proj.ds.t1\nproj.ds.t2", nil
+		},
+	}
+	input := json.RawMessage(`{}`)
+	result, isError := executeTool(context.Background(), "get_all_tables", input, executor)
+	if isError {
+		t.Fatalf("unexpected error: %s", result)
+	}
+	if !called {
+		t.Error("expected GetAllTables to be called")
+	}
+	if result != "proj.ds.t1\nproj.ds.t2" {
+		t.Errorf("unexpected result: %q", result)
+	}
+}
+
+func TestSummarizeInput_GetAllTables(t *testing.T) {
+	input := json.RawMessage(`{}`)
+	s := summarizeInput("get_all_tables", input)
+	if s != "all projects" {
+		t.Errorf("expected 'all projects', got %q", s)
+	}
+}
+
 func TestExecuteTool_UnknownTool(t *testing.T) {
 	executor := ToolExecutor{}
 	input := json.RawMessage(`{}`)
@@ -223,8 +252,8 @@ func TestTruncateResult_Empty(t *testing.T) {
 
 func TestToolDefinitions_Count(t *testing.T) {
 	tools := toolDefinitions()
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(tools))
+	if len(tools) != 5 {
+		t.Fatalf("expected 5 tools, got %d", len(tools))
 	}
 }
 
@@ -235,6 +264,7 @@ func TestToolDefinitions_Names(t *testing.T) {
 		"run_sql_query":    true,
 		"list_datasets":    true,
 		"list_tables":      true,
+		"get_all_tables":   true,
 	}
 	for _, tool := range tools {
 		if tool.OfTool == nil {

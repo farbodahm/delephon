@@ -628,13 +628,12 @@ func (a *App) handleAIMessageWithTools() (string, error) {
 	systemPrompt := "You are a BigQuery SQL expert. Help users write and run SQL queries.\n" +
 		"Always use fully-qualified table names (`project.dataset.table`).\n\n" +
 		projectList +
-		"STRICT RULES:\n" +
-		"- Use list_datasets and list_tables to discover datasets and tables. Do NOT guess table names.\n" +
-		"- NEVER guess column names or types. ALWAYS call get_table_schema FIRST before writing any SQL.\n" +
-		"- Pay close attention to column types returned by get_table_schema. Use correct type casts " +
-		"(e.g. use TIMESTAMP functions for TIMESTAMP columns, not DATE comparisons).\n" +
-		"- After writing the query, use run_sql_query to verify it works.\n" +
-		"- Briefly explain what the query does.\n"
+		"STRICT RULES - follow this exact workflow:\n" +
+		"1. FIRST call get_all_tables to see every available table. NEVER guess or invent table names.\n" +
+		"2. Call get_table_schema on the relevant table(s) to learn column names and types. NEVER guess columns.\n" +
+		"3. Write the SQL using correct types (e.g. TIMESTAMP functions for TIMESTAMP columns, not DATE).\n" +
+		"4. Call run_sql_query to verify the query works.\n" +
+		"5. Briefly explain what the query does.\n"
 
 	msgs := toAIMessages(a.assistant.Messages())
 	sdkMsgs := ai.ConvertMessages(msgs)
@@ -890,6 +889,34 @@ func (a *App) buildToolExecutor() ai.ToolExecutor {
 			}
 			sort.Strings(tables)
 			return strings.Join(tables, "\n"), nil
+		},
+		GetAllTables: func(ctx context.Context) (string, error) {
+			hierarchy := a.explorer.CachedHierarchy()
+
+			// Ensure favorite projects are loaded
+			favProjects, _ := a.store.ListFavoriteProjects()
+			for _, project := range favProjects {
+				if _, ok := hierarchy[project]; !ok {
+					a.loadProjectDataForAutocomplete(project)
+				}
+			}
+			hierarchy = a.explorer.CachedHierarchy()
+
+			var b strings.Builder
+			count := 0
+			// Group by project and dataset for clarity
+			for project, dsMap := range hierarchy {
+				for dataset, tbls := range dsMap {
+					for _, table := range tbls {
+						fmt.Fprintf(&b, "`%s`.`%s`.`%s`\n", project, dataset, table)
+						count++
+					}
+				}
+			}
+			if count == 0 {
+				return "No tables found. Star some projects first.", nil
+			}
+			return fmt.Sprintf("%d tables found:\n%s", count, b.String()), nil
 		},
 	}
 }

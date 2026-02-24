@@ -18,6 +18,7 @@ type ToolExecutor struct {
 	RunSQLQuery    func(ctx context.Context, project, sql string) (string, error)
 	ListDatasets   func(ctx context.Context, project string) (string, error)
 	ListTables     func(ctx context.Context, project, dataset string) (string, error)
+	GetAllTables   func(ctx context.Context) (string, error)
 }
 
 // StatusFunc is called to update the UI status label.
@@ -84,6 +85,13 @@ func toolDefinitions() []anthropic.ToolUnionParam {
 					"dataset": map[string]any{"type": "string", "description": "BigQuery dataset ID"},
 				},
 				Required: []string{"project", "dataset"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        "get_all_tables",
+			Description: anthropic.String("Get all known tables across all favorite projects. Returns fully-qualified table names (project.dataset.table). Use this to see what tables are available before writing queries."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{},
 			},
 		}},
 	}
@@ -265,6 +273,13 @@ func executeTool(ctx context.Context, name string, rawInput json.RawMessage, exe
 		}
 		return res, false
 
+	case "get_all_tables":
+		res, err := executor.GetAllTables(ctx)
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), true
+		}
+		return res, false
+
 	default:
 		return fmt.Sprintf("unknown tool: %s", name), true
 	}
@@ -289,6 +304,8 @@ func summarizeInput(name string, rawInput json.RawMessage) string {
 		return m["project"]
 	case "list_tables":
 		return fmt.Sprintf("%s.%s", m["project"], m["dataset"])
+	case "get_all_tables":
+		return "all projects"
 	default:
 		return name
 	}
