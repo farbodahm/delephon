@@ -25,12 +25,19 @@ type StatusFunc func(text string)
 
 // ToolCallInfo describes a tool invocation for the UI.
 type ToolCallInfo struct {
-	Name  string
-	Input string // human-readable summary
+	Name    string
+	Input   string // human-readable summary
+	FullSQL string // full SQL text for run_sql_query calls (empty for other tools)
 }
 
 // ToolCallNotifyFunc is called after each tool execution to update the UI.
 type ToolCallNotifyFunc func(info ToolCallInfo, result string, isError bool)
+
+// ChatWithToolsResult holds the return values from ChatWithTools.
+type ChatWithToolsResult struct {
+	Response string // final text response from Claude
+	LastSQL  string // last SQL executed via run_sql_query tool (empty if none)
+}
 
 // toolDefinitions returns the tool definitions sent to the Claude API.
 func toolDefinitions() []anthropic.ToolUnionParam {
@@ -92,17 +99,18 @@ func (c *Client) ChatWithTools(
 	executor ToolExecutor,
 	onStatus StatusFunc,
 	onToolCall ToolCallNotifyFunc,
-) (string, error) {
+) (*ChatWithToolsResult, error) {
 	if model == "" || model == "default" {
 		resolved, err := c.resolveDefaultModel(ctx)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		model = resolved
 	}
 	log.Printf("ai: ChatWithTools using model %s", model)
 
 	tools := toolDefinitions()
+	var lastSQL string
 
 	for i := range maxToolIterations {
 		onStatus(fmt.Sprintf("Sending to Claude (turn %d)...", i+1))
@@ -119,7 +127,7 @@ func (c *Client) ChatWithTools(
 
 		resp, err := c.client.Messages.New(ctx, params)
 		if err != nil {
-			return "", fmt.Errorf("claude API error: %w", err)
+			return nil, fmt.Errorf("claude API error: %w", err)
 		}
 
 		log.Printf("ai: response stop_reason=%s, %d content blocks", resp.StopReason, len(resp.Content))
@@ -132,7 +140,7 @@ func (c *Client) ChatWithTools(
 					text += block.Text
 				}
 			}
-			return text, nil
+			return &ChatWithToolsResult{Response: text, LastSQL: lastSQL}, nil
 		}
 
 		// Convert response content blocks to assistant message param
@@ -154,15 +162,37 @@ func (c *Client) ChatWithTools(
 				continue
 			}
 
+			// Extract full SQL for run_sql_query calls
+			var fullSQL string
+			if block.Name == "run_sql_query" {
+				var input struct {
+					SQL string `json:"sql"`
+				}
+				if err := json.Unmarshal(block.Input, &input); err == nil {
+					fullSQL = input.SQL
+					lastSQL = input.SQL
+					log.Printf("ai: run_sql_query SQL:\n%s", input.SQL)
+				}
+			}
+
 			log.Printf("ai: executing tool %s (id=%s)", block.Name, block.ID)
 			onStatus(fmt.Sprintf("Running tool: %s...", block.Name))
 
 			result, isError := executeTool(ctx, block.Name, block.Input, executor)
 
+			if block.Name == "run_sql_query" {
+				if isError {
+					log.Printf("ai: run_sql_query FAILED: %s", result)
+				} else {
+					log.Printf("ai: run_sql_query SUCCESS")
+				}
+			}
+
 			if onToolCall != nil {
 				info := ToolCallInfo{
-					Name:  block.Name,
-					Input: summarizeInput(block.Name, block.Input),
+					Name:    block.Name,
+					Input:   summarizeInput(block.Name, block.Input),
+					FullSQL: fullSQL,
 				}
 				onToolCall(info, truncateResult(result, 200), isError)
 			}
@@ -173,7 +203,7 @@ func (c *Client) ChatWithTools(
 		messages = append(messages, anthropic.NewUserMessage(toolResults...))
 	}
 
-	return "", fmt.Errorf("tool use loop exceeded %d iterations", maxToolIterations)
+	return nil, fmt.Errorf("tool use loop exceeded %d iterations", maxToolIterations)
 }
 
 // executeTool dispatches a tool call to the appropriate ToolExecutor callback.

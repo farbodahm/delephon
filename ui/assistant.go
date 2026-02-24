@@ -225,14 +225,24 @@ func (a *Assistant) AddToolCallMessage(toolName, inputSummary, resultSummary str
 
 func buildToolCallWidget(toolName, inputSummary, resultSummary string, isError bool) fyne.CanvasObject {
 	prefix := "  \u2713 " // checkmark
+	status := "OK"
 	if isError {
 		prefix = "  \u2717 " // X mark
+		status = "Error"
 	}
-	text := prefix + toolName + "(" + inputSummary + ")"
-	lbl := widget.NewLabel(text)
-	lbl.TextStyle = fyne.TextStyle{Italic: true}
-	lbl.Wrapping = fyne.TextWrapWord
-	return lbl
+	header := prefix + toolName + "(" + inputSummary + ") - " + status
+	headerLbl := widget.NewLabel(header)
+	headerLbl.TextStyle = fyne.TextStyle{Italic: true}
+	headerLbl.Wrapping = fyne.TextWrapWord
+
+	if resultSummary == "" {
+		return headerLbl
+	}
+
+	resultLbl := widget.NewLabel("  " + resultSummary)
+	resultLbl.TextStyle = fyne.TextStyle{Italic: true}
+	resultLbl.Wrapping = fyne.TextWrapWord
+	return container.NewVBox(headerLbl, resultLbl)
 }
 
 // SetOnShowSettings sets the callback for the settings button.

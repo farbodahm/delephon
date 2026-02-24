@@ -618,17 +618,23 @@ func (a *App) handleAIMessage(userMsg string) {
 }
 
 func (a *App) handleAIMessageWithTools() (string, error) {
-	tableListCtx := a.buildTableListContext()
-	log.Printf("ai: table list context length: %d chars", len(tableListCtx))
+	// List favorite projects so Claude knows which projects exist
+	favProjects, _ := a.store.ListFavoriteProjects()
+	projectList := ""
+	if len(favProjects) > 0 {
+		projectList = "Available projects: " + strings.Join(favProjects, ", ") + "\n\n"
+	}
 
-	systemPrompt := "You are a BigQuery SQL expert. Generate SQL queries based on the user's description. " +
-		"Always use fully-qualified table names (`project.dataset.table`). " +
-		"Return your final SQL in a ```sql code block. " +
-		"Be concise in your explanations.\n" +
-		"You have tools to explore schemas, list datasets/tables, and run queries. " +
-		"Use get_table_schema to understand table structure before writing queries. " +
-		"Use run_sql_query to verify your queries if needed.\n\n" +
-		tableListCtx
+	systemPrompt := "You are a BigQuery SQL expert. Help users write and run SQL queries.\n" +
+		"Always use fully-qualified table names (`project.dataset.table`).\n\n" +
+		projectList +
+		"STRICT RULES:\n" +
+		"- Use list_datasets and list_tables to discover datasets and tables. Do NOT guess table names.\n" +
+		"- NEVER guess column names or types. ALWAYS call get_table_schema FIRST before writing any SQL.\n" +
+		"- Pay close attention to column types returned by get_table_schema. Use correct type casts " +
+		"(e.g. use TIMESTAMP functions for TIMESTAMP columns, not DATE comparisons).\n" +
+		"- After writing the query, use run_sql_query to verify it works.\n" +
+		"- Briefly explain what the query does.\n"
 
 	msgs := toAIMessages(a.assistant.Messages())
 	sdkMsgs := ai.ConvertMessages(msgs)
@@ -642,7 +648,20 @@ func (a *App) handleAIMessageWithTools() (string, error) {
 		a.assistant.AddToolCallMessage(info.Name, info.Input, result, isError)
 	}
 
-	return a.aiClient.ChatWithTools(a.ctx, model, systemPrompt, sdkMsgs, executor, statusFn, toolCallFn)
+	result, err := a.aiClient.ChatWithTools(a.ctx, model, systemPrompt, sdkMsgs, executor, statusFn, toolCallFn)
+	if err != nil {
+		return "", err
+	}
+
+	resp := result.Response
+
+	// Always append the last SQL that was actually executed via tool
+	if result.LastSQL != "" {
+		log.Printf("ai: last tool SQL:\n%s", result.LastSQL)
+		resp += "\n\n```sql\n" + result.LastSQL + "\n```"
+	}
+
+	return resp, nil
 }
 
 func (a *App) handleAIMessageLegacy() (string, error) {
