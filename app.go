@@ -39,8 +39,11 @@ type App struct {
 	favorites *ui.Favorites
 	assistant *ui.Assistant
 
-	aiClient       *ai.Client
-	tableListCache string // cached table list context for AI
+	aiClient         *ai.Client
+	useTools         bool                       // feature flag: use Claude tool calling
+	tableListCache   string                     // cached table list context for AI (tool-use mode)
+	schemaCache      string                     // cached schema context for AI (legacy mode)
+	tableSchemaCache map[string]*bq.TableSchema // cached per-table schemas (legacy mode)
 
 	topArea           *fyne.Container
 	editorSchemaSplit *container.Split
@@ -231,6 +234,14 @@ func (a *App) wireCallbacks() {
 	a.assistant.SetOnShowSettings(func() {
 		a.showAPIKeyDialog()
 	})
+
+	// Load use-tools setting (defaults to true on first use)
+	if v, _ := a.store.GetSetting("use_claude_tools"); v == "false" {
+		a.useTools = false
+	} else {
+		a.useTools = true
+		_ = a.store.SetSetting("use_claude_tools", "true")
+	}
 }
 
 func (a *App) runQuery(project, sqlText string) {
@@ -421,6 +432,7 @@ func (a *App) toggleFavProject() {
 		_ = a.store.AddFavoriteProject(project)
 	}
 	a.tableListCache = "" // invalidate AI table list cache
+	a.schemaCache = ""    // invalidate legacy schema cache
 	a.refreshFavProjects()
 }
 
@@ -564,33 +576,15 @@ func (a *App) handleAIMessage(userMsg string) {
 		}
 	}
 
-	// Build lightweight table list context
-	tableListCtx := a.buildTableListContext()
-	log.Printf("ai: table list context length: %d chars", len(tableListCtx))
+	var resp string
+	var err error
 
-	systemPrompt := "You are a BigQuery SQL expert. Generate SQL queries based on the user's description. " +
-		"Always use fully-qualified table names (`project.dataset.table`). " +
-		"Return your final SQL in a ```sql code block. " +
-		"Be concise in your explanations.\n" +
-		"You have tools to explore schemas, list datasets/tables, and run queries. " +
-		"Use get_table_schema to understand table structure before writing queries. " +
-		"Use run_sql_query to verify your queries if needed.\n\n" +
-		tableListCtx
-
-	// Convert conversation history
-	msgs := toAIMessages(a.assistant.Messages())
-	sdkMsgs := ai.ConvertMessages(msgs)
-
-	model, _ := a.store.GetSetting("anthropic_model")
-	log.Printf("ai: sending %d messages to Claude with tools (model=%s)", len(sdkMsgs), model)
-
-	executor := a.buildToolExecutor()
-	statusFn := func(text string) { a.assistant.SetStatus(text) }
-	toolCallFn := func(info ai.ToolCallInfo, result string, isError bool) {
-		a.assistant.AddToolCallMessage(info.Name, info.Input, result, isError)
+	if a.useTools {
+		resp, err = a.handleAIMessageWithTools()
+	} else {
+		resp, err = a.handleAIMessageLegacy()
 	}
 
-	resp, err := a.aiClient.ChatWithTools(a.ctx, model, systemPrompt, sdkMsgs, executor, statusFn, toolCallFn)
 	if err != nil {
 		log.Printf("ai: Claude API error: %v", err)
 		a.assistant.SetStatus("")
@@ -621,6 +615,53 @@ func (a *App) handleAIMessage(userMsg string) {
 	} else {
 		log.Print("ai: no SQL block found in response")
 	}
+}
+
+func (a *App) handleAIMessageWithTools() (string, error) {
+	tableListCtx := a.buildTableListContext()
+	log.Printf("ai: table list context length: %d chars", len(tableListCtx))
+
+	systemPrompt := "You are a BigQuery SQL expert. Generate SQL queries based on the user's description. " +
+		"Always use fully-qualified table names (`project.dataset.table`). " +
+		"Return your final SQL in a ```sql code block. " +
+		"Be concise in your explanations.\n" +
+		"You have tools to explore schemas, list datasets/tables, and run queries. " +
+		"Use get_table_schema to understand table structure before writing queries. " +
+		"Use run_sql_query to verify your queries if needed.\n\n" +
+		tableListCtx
+
+	msgs := toAIMessages(a.assistant.Messages())
+	sdkMsgs := ai.ConvertMessages(msgs)
+
+	model, _ := a.store.GetSetting("anthropic_model")
+	log.Printf("ai: sending %d messages to Claude with tools (model=%s)", len(sdkMsgs), model)
+
+	executor := a.buildToolExecutor()
+	statusFn := func(text string) { a.assistant.SetStatus(text) }
+	toolCallFn := func(info ai.ToolCallInfo, result string, isError bool) {
+		a.assistant.AddToolCallMessage(info.Name, info.Input, result, isError)
+	}
+
+	return a.aiClient.ChatWithTools(a.ctx, model, systemPrompt, sdkMsgs, executor, statusFn, toolCallFn)
+}
+
+func (a *App) handleAIMessageLegacy() (string, error) {
+	a.assistant.SetStatus("Gathering schema from favorite projects...")
+	schemaCtx := a.buildSchemaContext()
+	log.Printf("ai: schema context length: %d chars", len(schemaCtx))
+
+	systemPrompt := "You are a BigQuery SQL expert. Generate SQL queries based on the user's description. " +
+		"Always use fully-qualified table names (`project.dataset.table`). " +
+		"Return SQL in a ```sql code block. " +
+		"Be concise in your explanations.\n\n" +
+		"Available schemas:\n" + schemaCtx
+
+	msgs := toAIMessages(a.assistant.Messages())
+
+	model, _ := a.store.GetSetting("anthropic_model")
+	log.Printf("ai: sending %d messages to Claude (model=%s)", len(msgs), model)
+	a.assistant.SetStatus("Sending to Claude...")
+	return a.aiClient.Chat(a.ctx, model, systemPrompt, msgs)
 }
 
 func (a *App) buildTableListContext() string {
@@ -669,6 +710,109 @@ func (a *App) buildTableListContext() string {
 	result := b.String()
 	a.tableListCache = result
 	log.Printf("ai: table list context: %d tables", count)
+	return result
+}
+
+func (a *App) buildSchemaContext() string {
+	if a.schemaCache != "" {
+		log.Print("ai: using cached schema context")
+		return a.schemaCache
+	}
+
+	if a.tableSchemaCache == nil {
+		a.tableSchemaCache = make(map[string]*bq.TableSchema)
+	}
+
+	favProjects, err := a.store.ListFavoriteProjects()
+	if err != nil || len(favProjects) == 0 {
+		log.Print("ai: no favorite projects for schema context")
+		return "(No favorite projects found. Star a project to provide schema context.)"
+	}
+	log.Printf("ai: building schema for %d favorite projects", len(favProjects))
+
+	hierarchy := a.explorer.CachedHierarchy()
+
+	type tableRef struct {
+		project, dataset, table string
+	}
+	var toFetch []tableRef
+	for _, project := range favProjects {
+		dsMap, ok := hierarchy[project]
+		if !ok {
+			a.loadProjectDataForAutocomplete(project)
+			hierarchy = a.explorer.CachedHierarchy()
+			dsMap = hierarchy[project]
+		}
+		if dsMap == nil {
+			continue
+		}
+		for dataset, tables := range dsMap {
+			for _, table := range tables {
+				key := project + "." + dataset + "." + table
+				if _, cached := a.tableSchemaCache[key]; !cached {
+					toFetch = append(toFetch, tableRef{project, dataset, table})
+				}
+			}
+		}
+	}
+
+	if len(toFetch) > 0 {
+		log.Printf("ai: fetching schemas for %d tables", len(toFetch))
+		sem := make(chan struct{}, 10)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ref := range toFetch {
+			ref := ref
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				schema, err := a.bqMgr.GetTableSchema(a.ctx, ref.project, ref.dataset, ref.table)
+				key := ref.project + "." + ref.dataset + "." + ref.table
+				mu.Lock()
+				if err == nil {
+					a.tableSchemaCache[key] = schema
+				} else {
+					a.tableSchemaCache[key] = nil
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		log.Printf("ai: fetched %d table schemas", len(toFetch))
+	}
+
+	var b strings.Builder
+	for _, project := range favProjects {
+		dsMap := hierarchy[project]
+		if dsMap == nil {
+			continue
+		}
+		fmt.Fprintf(&b, "Project: %s\n", project)
+		for dataset, tables := range dsMap {
+			fmt.Fprintf(&b, "  Dataset: %s\n", dataset)
+			for _, table := range tables {
+				key := project + "." + dataset + "." + table
+				schema := a.tableSchemaCache[key]
+				if schema == nil {
+					fmt.Fprintf(&b, "    Table: %s\n", table)
+					continue
+				}
+				cols := make([]string, len(schema.Fields))
+				for i, f := range schema.Fields {
+					cols[i] = f.Name + " " + f.Type
+				}
+				fmt.Fprintf(&b, "    Table: %s (columns: %s)\n", table, strings.Join(cols, ", "))
+			}
+		}
+	}
+
+	result := b.String()
+	if result == "" {
+		return "(No schema data available. Star a project and expand its datasets.)"
+	}
+	a.schemaCache = result
 	return result
 }
 
@@ -788,10 +932,14 @@ func (a *App) showAPIKeyDialog() {
 		modelSelect.SetSelected(models[0])
 	}
 
+	useToolsCheck := widget.NewCheck("", nil)
+	useToolsCheck.SetChecked(a.useTools)
+
 	dialog.ShowForm("AI Assistant Settings", "Save", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("API Key", keyEntry),
 			widget.NewFormItem("Model", modelSelect),
+			widget.NewFormItem("Use Tools", useToolsCheck),
 		},
 		func(ok bool) {
 			if !ok {
@@ -805,6 +953,13 @@ func (a *App) showAPIKeyDialog() {
 			if err := a.store.SetSetting("anthropic_model", modelSelect.Selected); err != nil {
 				a.showError("Settings Error", err)
 				return
+			}
+			// Save use-tools setting
+			a.useTools = useToolsCheck.Checked
+			if a.useTools {
+				_ = a.store.SetSetting("use_claude_tools", "true")
+			} else {
+				_ = a.store.SetSetting("use_claude_tools", "false")
 			}
 			// Reset AI client so it picks up the new key
 			if key != "" {
