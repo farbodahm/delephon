@@ -628,12 +628,18 @@ func (a *App) handleAIMessageWithTools() (string, error) {
 	systemPrompt := "You are a BigQuery SQL expert. Help users write and run SQL queries.\n" +
 		"Always use fully-qualified table names (`project.dataset.table`).\n\n" +
 		projectList +
-		"STRICT RULES - follow this exact workflow:\n" +
-		"1. FIRST call get_all_tables to see every available table. NEVER guess or invent table names.\n" +
-		"2. Call get_table_schema on the relevant table(s) to learn column names and types. NEVER guess columns.\n" +
-		"3. Write the SQL using correct types (e.g. TIMESTAMP functions for TIMESTAMP columns, not DATE).\n" +
-		"4. Call run_sql_query to verify the query works.\n" +
-		"5. Briefly explain what the query does.\n"
+		"You have these tools available:\n" +
+		"- get_all_tables: Returns all known tables across all projects. Use when you need to find which tables exist.\n" +
+		"- list_datasets: List datasets in a project. Use to explore a specific project.\n" +
+		"- list_tables: List tables in a dataset. Use to explore a specific dataset.\n" +
+		"- get_table_schema: Get column names, types, and partition info for a table. Always check schema before writing queries.\n" +
+		"- run_sql_query: Execute a SQL query. Use to verify your queries work.\n\n" +
+		"RULES:\n" +
+		"- NEVER guess or invent table or column names. Always use tools to discover them first.\n" +
+		"- Choose the most efficient tool for the task. If the user mentions a specific project or table, you can go directly to list_tables or get_table_schema instead of fetching all tables.\n" +
+		"- Always call get_table_schema before writing a query to learn correct column names and types.\n" +
+		"- Use run_sql_query to verify the query works before returning it.\n" +
+		"- Briefly explain what the query does.\n"
 
 	msgs := toAIMessages(a.assistant.Messages())
 	sdkMsgs := ai.ConvertMessages(msgs)
