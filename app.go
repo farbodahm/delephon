@@ -662,8 +662,9 @@ func (a *App) handleAIMessageWithTools() (string, error) {
 
 	// Always append the last SQL that was actually executed via tool
 	if result.LastSQL != "" {
-		log.Printf("ai: last tool SQL:\n%s", result.LastSQL)
-		resp += "\n\n```sql\n" + result.LastSQL + "\n```"
+		limitedSQL := enforceQueryLimit(result.LastSQL)
+		log.Printf("ai: last tool SQL:\n%s", limitedSQL)
+		resp += "\n\n```sql\n" + limitedSQL + "\n```"
 	}
 
 	return resp, nil
@@ -867,7 +868,9 @@ func (a *App) buildToolExecutor() ai.ToolExecutor {
 			if billingProject == "" {
 				billingProject = project // fallback to Claude's project if none selected
 			}
+			log.Printf("ai: tool run_sql_query: claude requested project=%s, using billing project=%s", project, billingProject)
 			sql = enforceQueryLimit(sql)
+			log.Printf("ai: tool run_sql_query (after limit enforcement):\n%s", sql)
 			result, err := a.bqMgr.RunQuery(ctx, billingProject, sql)
 			if err != nil {
 				return "", err
