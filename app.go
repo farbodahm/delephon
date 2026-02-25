@@ -857,8 +857,12 @@ func (a *App) buildToolExecutor() ai.ToolExecutor {
 			return b.String(), nil
 		},
 		RunSQLQuery: func(ctx context.Context, project, sql string) (string, error) {
+			billingProject := a.editor.GetCurrentProject()
+			if billingProject == "" {
+				billingProject = project // fallback to Claude's project if none selected
+			}
 			sql = enforceQueryLimit(sql)
-			result, err := a.bqMgr.RunQuery(ctx, project, sql)
+			result, err := a.bqMgr.RunQuery(ctx, billingProject, sql)
 			if err != nil {
 				return "", err
 			}
