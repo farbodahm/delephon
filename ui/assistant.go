@@ -213,6 +213,38 @@ func (a *Assistant) showSettingsDialog() {
 	}
 }
 
+// AddToolCallMessage displays a tool call as a compact label in the chat.
+// It is display-only and not added to a.messages (tool calls are internal to a single turn).
+func (a *Assistant) AddToolCallMessage(toolName, inputSummary, resultSummary string, isError bool) {
+	w := buildToolCallWidget(toolName, inputSummary, resultSummary, isError)
+	fyne.Do(func() {
+		a.chatBox.Add(w)
+		a.scroll.ScrollToBottom()
+	})
+}
+
+func buildToolCallWidget(toolName, inputSummary, resultSummary string, isError bool) fyne.CanvasObject {
+	prefix := "  \u2713 " // checkmark
+	status := "OK"
+	if isError {
+		prefix = "  \u2717 " // X mark
+		status = "Error"
+	}
+	header := prefix + toolName + "(" + inputSummary + ") - " + status
+	headerLbl := widget.NewLabel(header)
+	headerLbl.TextStyle = fyne.TextStyle{Italic: true}
+	headerLbl.Wrapping = fyne.TextWrapWord
+
+	if resultSummary == "" {
+		return headerLbl
+	}
+
+	resultLbl := widget.NewLabel("  " + resultSummary)
+	resultLbl.TextStyle = fyne.TextStyle{Italic: true}
+	resultLbl.Wrapping = fyne.TextWrapWord
+	return container.NewVBox(headerLbl, resultLbl)
+}
+
 // SetOnShowSettings sets the callback for the settings button.
 func (a *Assistant) SetOnShowSettings(fn func()) {
 	onShowSettings = fn

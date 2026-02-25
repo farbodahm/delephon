@@ -105,6 +105,11 @@ func (c *Client) resolveDefaultModel(ctx context.Context) (string, error) {
 	return models[0], nil
 }
 
+// ConvertMessages converts ai.Message slices to anthropic.MessageParam slices.
+func ConvertMessages(msgs []Message) []anthropic.MessageParam {
+	return convertMessages(msgs)
+}
+
 func convertMessages(msgs []Message) []anthropic.MessageParam {
 	params := make([]anthropic.MessageParam, len(msgs))
 	for i, m := range msgs {
