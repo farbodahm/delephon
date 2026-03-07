@@ -1,19 +1,25 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"image/color"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
+// maxCopySize is the maximum JSON size (in bytes) allowed for clipboard copy.
+const maxCopySize = 1 << 20 // 1 MB
+
 type Results struct {
 	table     *widget.Table
 	statusBar *widget.Label
+	copyBtn   *widget.Button
 
 	columns []string
 	rows    [][]string
@@ -25,6 +31,11 @@ func NewResults() *Results {
 	r := &Results{
 		statusBar: widget.NewLabel("Ready"),
 	}
+
+	r.copyBtn = widget.NewButtonWithIcon("Copy JSON", theme.ContentCopyIcon(), func() {
+		r.copyJSON()
+	})
+	r.copyBtn.Disable()
 
 	r.table = widget.NewTableWithHeaders(
 		func() (int, int) {
@@ -72,7 +83,8 @@ func NewResults() *Results {
 		txt.Refresh()
 	}
 
-	r.Container = container.NewBorder(nil, r.statusBar, nil, nil, r.table)
+	bottomBar := container.NewHBox(r.statusBar, layout.NewSpacer(), r.copyBtn)
+	r.Container = container.NewBorder(nil, bottomBar, nil, nil, r.table)
 	return r
 }
 
@@ -119,6 +131,7 @@ func (r *Results) SetData(columns []string, rows [][]string) {
 			r.table.SetColumnWidth(i, w)
 		}
 		r.table.Refresh()
+		r.copyBtn.Enable()
 	})
 }
 
@@ -134,5 +147,46 @@ func (r *Results) Clear() {
 	fyne.Do(func() {
 		r.table.Refresh()
 		r.statusBar.SetText("Ready")
+		r.copyBtn.Disable()
 	})
+}
+
+func (r *Results) copyJSON() {
+	if len(r.columns) == 0 || len(r.rows) == 0 {
+		return
+	}
+
+	data, err := buildResultsJSON(r.columns, r.rows)
+	if err != nil {
+		fyne.Do(func() { r.statusBar.SetText(fmt.Sprintf("Copy failed: %v", err)) })
+		return
+	}
+
+	if len(data) > maxCopySize {
+		fyne.Do(func() {
+			r.statusBar.SetText(fmt.Sprintf("Result too large to copy (%.2f MB > 1 MB)", float64(len(data))/(1024*1024)))
+		})
+		return
+	}
+
+	cb := fyne.CurrentApp().Clipboard()
+	if cb != nil {
+		cb.SetContent(string(data))
+	}
+	fyne.Do(func() { r.statusBar.SetText("Copied results as JSON to clipboard") })
+}
+
+// buildResultsJSON converts columns and rows into a JSON array of objects.
+func buildResultsJSON(columns []string, rows [][]string) ([]byte, error) {
+	records := make([]map[string]string, len(rows))
+	for i, row := range rows {
+		rec := make(map[string]string, len(columns))
+		for j, col := range columns {
+			if j < len(row) {
+				rec[col] = row[j]
+			}
+		}
+		records[i] = rec
+	}
+	return json.Marshal(records)
 }
