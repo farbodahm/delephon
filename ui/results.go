@@ -156,18 +156,7 @@ func (r *Results) copyJSON() {
 		return
 	}
 
-	records := make([]map[string]string, len(r.rows))
-	for i, row := range r.rows {
-		rec := make(map[string]string, len(r.columns))
-		for j, col := range r.columns {
-			if j < len(row) {
-				rec[col] = row[j]
-			}
-		}
-		records[i] = rec
-	}
-
-	data, err := json.Marshal(records)
+	data, err := buildResultsJSON(r.columns, r.rows)
 	if err != nil {
 		fyne.Do(func() { r.statusBar.SetText(fmt.Sprintf("Copy failed: %v", err)) })
 		return
@@ -185,4 +174,19 @@ func (r *Results) copyJSON() {
 		cb.SetContent(string(data))
 	}
 	fyne.Do(func() { r.statusBar.SetText("Copied results as JSON to clipboard") })
+}
+
+// buildResultsJSON converts columns and rows into a JSON array of objects.
+func buildResultsJSON(columns []string, rows [][]string) ([]byte, error) {
+	records := make([]map[string]string, len(rows))
+	for i, row := range rows {
+		rec := make(map[string]string, len(columns))
+		for j, col := range columns {
+			if j < len(row) {
+				rec[col] = row[j]
+			}
+		}
+		records[i] = rec
+	}
+	return json.Marshal(records)
 }
