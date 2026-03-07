@@ -27,6 +27,22 @@ type Favorite struct {
 	Project string
 }
 
+type Conversation struct {
+	ID        int64
+	Title     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ConversationMessage struct {
+	ID             int64
+	ConversationID int64
+	Role           string
+	Content        string
+	SQL            string
+	CreatedAt      time.Time
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -56,6 +72,10 @@ func New() (*Store, error) {
 }
 
 func newWithDB(db *sql.DB) (*Store, error) {
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -87,6 +107,20 @@ func (s *Store) migrate() error {
 		);
 		CREATE TABLE IF NOT EXISTS favorite_projects (
 			project_id TEXT PRIMARY KEY
+		);
+		CREATE TABLE IF NOT EXISTS ai_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS ai_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			sql_text TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
 	return err
@@ -248,4 +282,82 @@ func (s *Store) IsFavoriteProject(projectID string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM favorite_projects WHERE project_id = ?`, projectID).Scan(&count)
 	return count > 0, err
+}
+
+// AI Conversations
+
+func (s *Store) CreateConversation(title string) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO ai_conversations (title, created_at, updated_at) VALUES (?, ?, ?)`,
+		title, time.Now(), time.Now(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) AddConversationMessage(conversationID int64, role, content, sqlText string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO ai_messages (conversation_id, role, content, sql_text, created_at) VALUES (?, ?, ?, ?, ?)`,
+		conversationID, role, content, sqlText, time.Now(),
+	)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE ai_conversations SET updated_at = ? WHERE id = ?`, time.Now(), conversationID)
+	return err
+}
+
+func (s *Store) ListConversations(limit int) ([]Conversation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, title, created_at, updated_at FROM ai_conversations ORDER BY updated_at DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var convos []Conversation
+	for rows.Next() {
+		var c Conversation
+		if err := rows.Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		convos = append(convos, c)
+	}
+	return convos, rows.Err()
+}
+
+func (s *Store) GetConversationMessages(conversationID int64) ([]ConversationMessage, error) {
+	rows, err := s.db.Query(
+		`SELECT id, conversation_id, role, content, sql_text, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC`,
+		conversationID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var msgs []ConversationMessage
+	for rows.Next() {
+		var m ConversationMessage
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.SQL, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+func (s *Store) DeleteConversation(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM ai_conversations WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) ClearConversations() error {
+	_, err := s.db.Exec(`DELETE FROM ai_conversations`)
+	return err
 }

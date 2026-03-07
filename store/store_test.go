@@ -213,6 +213,143 @@ func TestFavoriteProjects(t *testing.T) {
 	}
 }
 
+func TestCreateAndListConversations(t *testing.T) {
+	s := newTestStore(t)
+
+	id1, err := s.CreateConversation("First chat")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	id2, err := s.CreateConversation("Second chat")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	id3, err := s.CreateConversation("Third chat")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	if id1 == 0 || id2 == 0 || id3 == 0 {
+		t.Fatal("expected non-zero IDs")
+	}
+
+	convos, err := s.ListConversations(10)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convos) != 3 {
+		t.Fatalf("expected 3 conversations, got %d", len(convos))
+	}
+	// Most recently updated first
+	if convos[0].Title != "Third chat" {
+		t.Errorf("expected 'Third chat' first, got %q", convos[0].Title)
+	}
+	if convos[2].Title != "First chat" {
+		t.Errorf("expected 'First chat' last, got %q", convos[2].Title)
+	}
+
+	// Limit
+	limited, _ := s.ListConversations(2)
+	if len(limited) != 2 {
+		t.Fatalf("expected 2 with limit, got %d", len(limited))
+	}
+}
+
+func TestAddAndGetConversationMessages(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.CreateConversation("Test chat")
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	if err := s.AddConversationMessage(id, "user", "hello", ""); err != nil {
+		t.Fatalf("AddConversationMessage: %v", err)
+	}
+	if err := s.AddConversationMessage(id, "assistant", "Here's a query", "SELECT 1"); err != nil {
+		t.Fatalf("AddConversationMessage: %v", err)
+	}
+
+	msgs, err := s.GetConversationMessages(id)
+	if err != nil {
+		t.Fatalf("GetConversationMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "hello" {
+		t.Errorf("unexpected first message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].SQL != "SELECT 1" {
+		t.Errorf("unexpected second message: %+v", msgs[1])
+	}
+	if msgs[0].ConversationID != id {
+		t.Errorf("expected conversation_id %d, got %d", id, msgs[0].ConversationID)
+	}
+}
+
+func TestDeleteConversation(t *testing.T) {
+	s := newTestStore(t)
+
+	id, _ := s.CreateConversation("To delete")
+	s.AddConversationMessage(id, "user", "hello", "")
+
+	if err := s.DeleteConversation(id); err != nil {
+		t.Fatalf("DeleteConversation: %v", err)
+	}
+
+	convos, _ := s.ListConversations(10)
+	if len(convos) != 0 {
+		t.Fatalf("expected 0 conversations after delete, got %d", len(convos))
+	}
+
+	// Cascade: messages should be gone too
+	msgs, _ := s.GetConversationMessages(id)
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages after cascade delete, got %d", len(msgs))
+	}
+}
+
+func TestClearConversations(t *testing.T) {
+	s := newTestStore(t)
+
+	id1, _ := s.CreateConversation("Chat 1")
+	id2, _ := s.CreateConversation("Chat 2")
+	s.AddConversationMessage(id1, "user", "msg1", "")
+	s.AddConversationMessage(id2, "user", "msg2", "")
+
+	if err := s.ClearConversations(); err != nil {
+		t.Fatalf("ClearConversations: %v", err)
+	}
+
+	convos, _ := s.ListConversations(10)
+	if len(convos) != 0 {
+		t.Fatalf("expected 0 conversations after clear, got %d", len(convos))
+	}
+}
+
+func TestConversationUpdatedAtOnNewMessage(t *testing.T) {
+	s := newTestStore(t)
+
+	id, _ := s.CreateConversation("Chat")
+
+	convos, _ := s.ListConversations(10)
+	if len(convos) != 1 {
+		t.Fatal("expected 1 conversation")
+	}
+	initialUpdated := convos[0].UpdatedAt
+
+	// Small delay to ensure time difference
+	time.Sleep(10 * time.Millisecond)
+
+	s.AddConversationMessage(id, "user", "hello", "")
+
+	convos, _ = s.ListConversations(10)
+	if !convos[0].UpdatedAt.After(initialUpdated) {
+		t.Errorf("expected updated_at to increase after adding message, got %v vs %v", convos[0].UpdatedAt, initialUpdated)
+	}
+}
+
 func TestListRecentProjects(t *testing.T) {
 	s := newTestStore(t)
 
