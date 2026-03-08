@@ -30,7 +30,7 @@ type ConversationSummary struct {
 
 type Assistant struct {
 	messages             []AssistantMessage
-	activeConversationID int64 // 0 = new/unsaved conversation
+	activeConversationID int64           // 0 = new/unsaved conversation
 	chatBox              *fyne.Container // VBox holding message widgets
 	scroll               *container.Scroll
 	input                *widget.Entry
