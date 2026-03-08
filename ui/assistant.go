@@ -1,12 +1,15 @@
 package ui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -19,16 +22,27 @@ type AssistantMessage struct {
 	SQL     string // extracted SQL from assistant messages (empty for user messages)
 }
 
-type Assistant struct {
-	messages  []AssistantMessage
-	chatBox   *fyne.Container // VBox holding message widgets
-	scroll    *container.Scroll
-	input     *widget.Entry
-	sendBtn   *widget.Button
-	statusLbl *widget.Label
+type ConversationSummary struct {
+	ID        int64
+	Title     string
+	UpdatedAt time.Time
+}
 
-	OnSendMessage func(userMsg string)
-	OnRunSQL      func(project, sql string)
+type Assistant struct {
+	messages             []AssistantMessage
+	activeConversationID int64           // 0 = new/unsaved conversation
+	chatBox              *fyne.Container // VBox holding message widgets
+	scroll               *container.Scroll
+	input                *widget.Entry
+	sendBtn              *widget.Button
+	statusLbl            *widget.Label
+
+	OnSendMessage        func(userMsg string)
+	OnRunSQL             func(project, sql string)
+	OnNewConversation    func()
+	OnLoadConversation   func(id int64)
+	OnDeleteConversation func(id int64)
+	OnListConversations  func() []ConversationSummary
 
 	Container fyne.CanvasObject
 }
@@ -61,9 +75,21 @@ func NewAssistant() *Assistant {
 		a.showSettingsDialog()
 	})
 
+	newChatBtn := widget.NewButtonWithIcon("New Chat", theme.ContentAddIcon(), func() {
+		if a.OnNewConversation != nil {
+			a.OnNewConversation()
+		}
+	})
+
+	historyBtn := widget.NewButtonWithIcon("History", theme.Icon(theme.IconNameHistory), func() {
+		a.showConversationList()
+	})
+
+	toolbar := container.NewHBox(newChatBtn, historyBtn)
+
 	inputRow := container.NewBorder(nil, nil, nil, container.NewHBox(a.sendBtn, settingsBtn), a.input)
 
-	a.Container = container.NewBorder(nil, container.NewVBox(a.statusLbl, inputRow), nil, nil, a.scroll)
+	a.Container = container.NewBorder(toolbar, container.NewVBox(a.statusLbl, inputRow), nil, nil, a.scroll)
 	return a
 }
 
@@ -182,9 +208,10 @@ func (a *Assistant) SetStatus(text string) {
 	})
 }
 
-// Clear clears the chat history.
+// Clear clears the chat history and resets the active conversation.
 func (a *Assistant) Clear() {
 	a.messages = nil
+	a.activeConversationID = 0
 	fyne.Do(func() {
 		a.chatBox.RemoveAll()
 	})
@@ -202,6 +229,108 @@ func ExtractSQL(response string) string {
 		return ""
 	}
 	return strings.TrimSpace(matches[1])
+}
+
+// ActiveConversationID returns the current active conversation ID (0 = new/unsaved).
+func (a *Assistant) ActiveConversationID() int64 {
+	return a.activeConversationID
+}
+
+// SetActiveConversationID sets the active conversation ID.
+func (a *Assistant) SetActiveConversationID(id int64) {
+	a.activeConversationID = id
+}
+
+// SetConversation loads a past conversation into the chat UI.
+func (a *Assistant) SetConversation(id int64, messages []AssistantMessage) {
+	a.activeConversationID = id
+	a.messages = messages
+	fyne.Do(func() {
+		a.chatBox.RemoveAll()
+		for _, msg := range messages {
+			w := a.buildMessageWidget(msg.Role, msg.Content)
+			a.chatBox.Add(w)
+		}
+		a.scroll.ScrollToBottom()
+	})
+}
+
+// showConversationList shows a dialog with past conversations.
+func (a *Assistant) showConversationList() {
+	if a.OnListConversations == nil {
+		return
+	}
+
+	convos := a.OnListConversations()
+	if len(convos) == 0 {
+		win := fyne.CurrentApp().Driver().AllWindows()
+		if len(win) > 0 {
+			dialog.ShowInformation("History", "No past conversations.", win[0])
+		}
+		return
+	}
+
+	win := fyne.CurrentApp().Driver().AllWindows()
+	if len(win) == 0 {
+		return
+	}
+
+	list := widget.NewList(
+		func() int { return len(convos) },
+		func() fyne.CanvasObject {
+			return container.NewBorder(nil, nil, nil,
+				widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
+				widget.NewLabel("placeholder"),
+			)
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			c := convos[id]
+			border := obj.(*fyne.Container)
+			lbl := border.Objects[0].(*widget.Label)
+			title := c.Title
+			if len(title) > 60 {
+				title = title[:60] + "..."
+			}
+			lbl.SetText(fmt.Sprintf("%s  (%s)", title, c.UpdatedAt.Format("Jan 2 15:04")))
+		},
+	)
+
+	var d *dialog.CustomDialog
+	list.OnSelected = func(id widget.ListItemID) {
+		if a.OnLoadConversation != nil {
+			a.OnLoadConversation(convos[id].ID)
+		}
+		d.Hide()
+	}
+
+	// Wire delete buttons
+	list.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
+		c := convos[id]
+		border := obj.(*fyne.Container)
+		lbl := border.Objects[0].(*widget.Label)
+		title := c.Title
+		if len(title) > 60 {
+			title = title[:60] + "..."
+		}
+		lbl.SetText(fmt.Sprintf("%s  (%s)", title, c.UpdatedAt.Format("Jan 2 15:04")))
+
+		delBtn := border.Objects[1].(*widget.Button)
+		delBtn.OnTapped = func() {
+			if a.OnDeleteConversation != nil {
+				a.OnDeleteConversation(c.ID)
+			}
+			// Refresh the list
+			convos = a.OnListConversations()
+			list.Refresh()
+		}
+	}
+
+	listContainer := container.NewStack(list)
+	listContainer.Resize(fyne.NewSize(500, 400))
+
+	d = dialog.NewCustom("Conversation History", "Close", listContainer, win[0])
+	d.Resize(fyne.NewSize(500, 400))
+	d.Show()
 }
 
 // showSettingsDialog is a placeholder that the app layer will replace via a callback.

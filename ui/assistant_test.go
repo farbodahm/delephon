@@ -129,3 +129,47 @@ func TestAssistantClear(t *testing.T) {
 		t.Fatalf("expected 0 messages after clear, got %d", len(a.Messages()))
 	}
 }
+
+func TestActiveConversationID(t *testing.T) {
+	a := NewAssistant()
+	if a.ActiveConversationID() != 0 {
+		t.Errorf("expected default active conversation ID to be 0, got %d", a.ActiveConversationID())
+	}
+	a.SetActiveConversationID(42)
+	if a.ActiveConversationID() != 42 {
+		t.Errorf("expected 42, got %d", a.ActiveConversationID())
+	}
+}
+
+func TestClearResetsConversationID(t *testing.T) {
+	a := NewAssistant()
+	a.SetActiveConversationID(99)
+	a.messages = nil           // simulate Clear's data operation
+	a.activeConversationID = 0 // simulate Clear's reset
+	if a.ActiveConversationID() != 0 {
+		t.Errorf("expected 0 after clear, got %d", a.ActiveConversationID())
+	}
+}
+
+func TestSetConversation(t *testing.T) {
+	a := NewAssistant()
+	msgs := []AssistantMessage{
+		{Role: "user", Content: "hello", SQL: ""},
+		{Role: "assistant", Content: "Here's a query", SQL: "SELECT 1"},
+	}
+	a.activeConversationID = 5
+	a.messages = msgs
+
+	if a.ActiveConversationID() != 5 {
+		t.Errorf("expected conversation ID 5, got %d", a.ActiveConversationID())
+	}
+	if len(a.Messages()) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(a.Messages()))
+	}
+	if a.Messages()[0].Role != "user" {
+		t.Errorf("expected user role, got %q", a.Messages()[0].Role)
+	}
+	if a.Messages()[1].SQL != "SELECT 1" {
+		t.Errorf("expected SQL, got %q", a.Messages()[1].SQL)
+	}
+}

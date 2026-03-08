@@ -230,6 +230,52 @@ func (a *App) wireCallbacks() {
 		go a.handleAIMessage(userMsg)
 	}
 
+	// Assistant: conversation management
+	a.assistant.OnNewConversation = func() {
+		a.assistant.Clear()
+	}
+	a.assistant.OnListConversations = func() []ui.ConversationSummary {
+		convos, err := a.store.ListConversations(50)
+		if err != nil {
+			log.Printf("ai: failed to list conversations: %v", err)
+			return nil
+		}
+		summaries := make([]ui.ConversationSummary, len(convos))
+		for i, c := range convos {
+			summaries[i] = ui.ConversationSummary{
+				ID:        c.ID,
+				Title:     c.Title,
+				UpdatedAt: c.UpdatedAt,
+			}
+		}
+		return summaries
+	}
+	a.assistant.OnLoadConversation = func(id int64) {
+		msgs, err := a.store.GetConversationMessages(id)
+		if err != nil {
+			log.Printf("ai: failed to load conversation %d: %v", id, err)
+			return
+		}
+		uiMsgs := make([]ui.AssistantMessage, len(msgs))
+		for i, m := range msgs {
+			uiMsgs[i] = ui.AssistantMessage{
+				Role:    m.Role,
+				Content: m.Content,
+				SQL:     m.SQL,
+			}
+		}
+		a.assistant.SetConversation(id, uiMsgs)
+	}
+	a.assistant.OnDeleteConversation = func(id int64) {
+		if err := a.store.DeleteConversation(id); err != nil {
+			log.Printf("ai: failed to delete conversation %d: %v", id, err)
+			return
+		}
+		if a.assistant.ActiveConversationID() == id {
+			a.assistant.Clear()
+		}
+	}
+
 	// Assistant: settings dialog
 	a.assistant.SetOnShowSettings(func() {
 		a.showAPIKeyDialog()
@@ -557,6 +603,27 @@ func (a *App) handleAIMessage(userMsg string) {
 	a.assistant.AddMessage("user", userMsg, "")
 	a.assistant.SetStatus("Initializing...")
 
+	// Create or reuse conversation for persistence
+	if a.assistant.ActiveConversationID() == 0 {
+		title := userMsg
+		if len(title) > 80 {
+			title = title[:80]
+		}
+		id, err := a.store.CreateConversation(title)
+		if err != nil {
+			log.Printf("ai: failed to create conversation: %v", err)
+		} else {
+			a.assistant.SetActiveConversationID(id)
+		}
+	}
+
+	// Persist user message
+	if cid := a.assistant.ActiveConversationID(); cid != 0 {
+		if err := a.store.AddConversationMessage(cid, "user", userMsg, ""); err != nil {
+			log.Printf("ai: failed to persist user message: %v", err)
+		}
+	}
+
 	// Initialize AI client lazily
 	if a.aiClient == nil {
 		apiKey, _ := a.store.GetSetting("anthropic_api_key")
@@ -569,7 +636,9 @@ func (a *App) handleAIMessage(userMsg string) {
 			if err != nil {
 				log.Printf("ai: no API key available: %v", err)
 				a.assistant.SetStatus("")
-				a.assistant.AddMessage("assistant", "Please set your Anthropic API key via the Settings button or ANTHROPIC_API_KEY environment variable.", "")
+				errMsg := "Please set your Anthropic API key via the Settings button or ANTHROPIC_API_KEY environment variable."
+				a.assistant.AddMessage("assistant", errMsg, "")
+				a.persistAssistantMessage(errMsg, "")
 				return
 			}
 			a.aiClient = client
@@ -588,7 +657,9 @@ func (a *App) handleAIMessage(userMsg string) {
 	if err != nil {
 		log.Printf("ai: Claude API error: %v", err)
 		a.assistant.SetStatus("")
-		a.assistant.AddMessage("assistant", fmt.Sprintf("Error: %v", err), "")
+		errMsg := fmt.Sprintf("Error: %v", err)
+		a.assistant.AddMessage("assistant", errMsg, "")
+		a.persistAssistantMessage(errMsg, "")
 		return
 	}
 	log.Printf("ai: got response (%d chars)", len(resp))
@@ -597,6 +668,7 @@ func (a *App) handleAIMessage(userMsg string) {
 	sql := ui.ExtractSQL(resp)
 	a.assistant.AddMessage("assistant", resp, sql)
 	a.assistant.SetStatus("")
+	a.persistAssistantMessage(resp, sql)
 
 	// Auto-run if SQL was found
 	if sql != "" {
@@ -614,6 +686,14 @@ func (a *App) handleAIMessage(userMsg string) {
 		fyne.Do(func() { a.rightSplit.SetOffset(0.4) })
 	} else {
 		log.Print("ai: no SQL block found in response")
+	}
+}
+
+func (a *App) persistAssistantMessage(content, sql string) {
+	if cid := a.assistant.ActiveConversationID(); cid != 0 {
+		if err := a.store.AddConversationMessage(cid, "assistant", content, sql); err != nil {
+			log.Printf("ai: failed to persist assistant message: %v", err)
+		}
 	}
 }
 
