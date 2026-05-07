@@ -28,6 +28,7 @@ type Editor struct {
 	tabData         map[*container.TabItem]*queryTab
 	tabCount        int
 	onProjectNeeded func(project string)
+	onTextChanged   func(string)
 
 	RunQuery RunQueryFunc
 	OnStop   func()
@@ -67,6 +68,17 @@ func NewEditor() *Editor {
 	e.tabs.CreateTab = func() *container.TabItem {
 		return e.newTab()
 	}
+	e.tabs.OnSelected = func(tab *container.TabItem) {
+		// Re-trigger text changed callback so context-aware completions
+		// update when switching tabs.
+		e.mu.Lock()
+		fn := e.onTextChanged
+		qt, ok := e.tabData[tab]
+		e.mu.Unlock()
+		if fn != nil && ok {
+			fn(qt.editor.Text())
+		}
+	}
 
 	// Start with one tab
 	first := e.newTab()
@@ -88,6 +100,9 @@ func (e *Editor) newTab() *container.TabItem {
 
 	e.mu.Lock()
 	editor.OnProjectNeeded = e.onProjectNeeded
+	if e.onTextChanged != nil {
+		editor.SetOnChanged(e.onTextChanged)
+	}
 	editor.OnSubmit = func() { e.run() }
 	e.tabData[tab] = &queryTab{
 		editor:  editor,
@@ -195,5 +210,27 @@ func (e *Editor) SetProjectData(data map[string]map[string][]string) {
 	e.mu.Unlock()
 	if ok {
 		qt.editor.SetProjectData(data)
+	}
+}
+
+// SetOnTextChanged sets a callback invoked when the editor text changes.
+// The callback is wired to all existing and future tabs.
+func (e *Editor) SetOnTextChanged(fn func(string)) {
+	e.mu.Lock()
+	e.onTextChanged = fn
+	for _, qt := range e.tabData {
+		qt.editor.SetOnChanged(fn)
+	}
+	e.mu.Unlock()
+}
+
+// SetSectionCompletions passes per-section column completions to the current tab's SQLEditor.
+func (e *Editor) SetSectionCompletions(sections []SectionCompletion) {
+	e.mu.Lock()
+	tab := e.tabs.Selected()
+	qt, ok := e.tabData[tab]
+	e.mu.Unlock()
+	if ok {
+		qt.editor.SetSectionCompletions(sections)
 	}
 }

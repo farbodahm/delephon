@@ -52,14 +52,15 @@ type SQLEditor struct {
 	stopBlink   chan struct{}
 
 	// Autocomplete state.
-	completions     []string                       // full list: SQL keywords + column names
-	acProjectData   map[string]map[string][]string // project -> dataset -> []tables
-	acPrefix        string                         // prefix used for current filtering (for accept)
-	acFiltered      []string                       // filtered by current prefix
-	acVisible       bool
-	acSelected      int
-	acLoadRequested map[string]bool      // projects we've already requested loading for
-	OnProjectNeeded func(project string) // callback: request loading data for a project
+	completions        []string                       // full list: SQL keywords + column names
+	acProjectData      map[string]map[string][]string // project -> dataset -> []tables
+	acPrefix           string                         // prefix used for current filtering (for accept)
+	acFiltered         []string                       // filtered by current prefix
+	acVisible          bool
+	acSelected         int
+	acLoadRequested    map[string]bool      // projects we've already requested loading for
+	OnProjectNeeded    func(project string) // callback: request loading data for a project
+	sectionCompletions []SectionCompletion  // per-section column completions from query parsing
 
 	// AC rendering (canvas primitives, created in CreateRenderer).
 	acBg         *canvas.Rectangle
@@ -1220,6 +1221,15 @@ func (e *SQLEditor) SetProjectData(data map[string]map[string][]string) {
 	e.updateAutocomplete()
 }
 
+// SetSectionCompletions stores per-section column completions derived from query parsing.
+// Each section maps a byte-offset range to column names from tables in that section.
+func (e *SQLEditor) SetSectionCompletions(sections []SectionCompletion) {
+	e.mu.Lock()
+	e.sectionCompletions = sections
+	e.mu.Unlock()
+	e.updateAutocomplete()
+}
+
 // dottedExprBeforeCursorLocked walks left from the cursor to extract a dotted expression
 // (e.g. "project.dataset.tab"). Returns nil if no dots are found (caller should use flat completion).
 // Caller must hold mu.
@@ -1340,6 +1350,18 @@ func (e *SQLEditor) updateAutocomplete() {
 	e.mu.Lock()
 	prefix := e.wordBeforeCursorLocked()
 	completions := e.completions
+
+	// Merge context-aware columns from the section the cursor is in.
+	if len(e.sectionCompletions) > 0 {
+		offset := CursorOffset(e.lines, e.cursorRow, e.cursorCol)
+		for _, sc := range e.sectionCompletions {
+			if offset >= sc.Start && offset <= sc.End {
+				completions = mergeCompletionLists(completions, sc.Columns)
+				break
+			}
+		}
+	}
+
 	e.acPrefix = prefix
 	e.mu.Unlock()
 
