@@ -49,6 +49,9 @@ type App struct {
 	editorSchemaSplit *container.Split
 	rightSplit        *container.Split
 
+	contextTimer   *time.Timer
+	contextTimerMu sync.Mutex
+
 	ctx       context.Context
 	cancelRun context.CancelFunc
 }
@@ -157,6 +160,11 @@ func (a *App) wireCallbacks() {
 	// Editor: project data needed for autocomplete → load datasets+tables
 	a.editor.SetOnProjectNeeded(func(project string) {
 		a.loadProjectDataForAutocomplete(project)
+	})
+
+	// Editor: text changed → debounced context-aware autocomplete update
+	a.editor.SetOnTextChanged(func(sql string) {
+		a.scheduleContextUpdate(sql)
 	})
 
 	// Explorer: table selected -> show schema + generate SELECT query
@@ -291,6 +299,9 @@ func (a *App) wireCallbacks() {
 }
 
 func (a *App) runQuery(project, sqlText string) {
+	// Cancel any pending schema fetches so they don't compete with the query.
+	a.cancelPendingContextUpdate()
+
 	if a.cancelRun != nil {
 		a.cancelRun()
 	}
@@ -302,27 +313,40 @@ func (a *App) runQuery(project, sqlText string) {
 	fyne.Do(func() { a.rightSplit.SetOffset(0.4) })
 	start := time.Now()
 
-	result, err := a.bqMgr.RunQuery(ctx, project, sqlText)
+	// Stream results: columns appear immediately, then rows arrive incrementally.
+	result, err := a.bqMgr.RunQueryStreaming(ctx, project, sqlText,
+		func(columns []string) {
+			a.results.SetColumns(columns)
+		},
+		func(rows [][]string) {
+			a.results.AppendRows(rows)
+		},
+	)
 	dur := time.Since(start)
 
 	if err != nil {
 		a.results.SetStatus(fmt.Sprintf("Error: %v", err))
-		_ = a.store.AddHistory(sqlText, project, dur, 0, err.Error())
-		a.refreshHistory()
-		a.refreshRecentProjects()
+		go func() {
+			_ = a.store.AddHistory(sqlText, project, dur, 0, err.Error())
+			a.refreshHistory()
+			a.refreshRecentProjects()
+		}()
 		return
 	}
 
-	a.results.SetData(result.Columns, result.Rows)
 	a.results.SetStatus(fmt.Sprintf("%d rows | %s | %.2f MB processed",
 		result.RowCount,
 		result.Duration.Round(time.Millisecond),
 		float64(result.BytesProcessed)/(1024*1024),
 	))
 
-	_ = a.store.AddHistory(sqlText, project, dur, result.RowCount, "")
-	a.refreshHistory()
-	a.refreshRecentProjects()
+	// Everything else in the background: history, recent projects, autocomplete context.
+	go func() {
+		_ = a.store.AddHistory(sqlText, project, dur, result.RowCount, "")
+		a.refreshHistory()
+		a.refreshRecentProjects()
+		a.updateQueryContext(sqlText)
+	}()
 }
 
 func (a *App) refreshHistory() {
@@ -596,6 +620,119 @@ func (a *App) loadProjectDataForAutocomplete(project string) {
 	wg.Wait()
 	a.explorer.CacheProjectData(project, result)
 	a.updateCompletions()
+}
+
+// cancelPendingContextUpdate stops any pending debounced schema fetch
+// so it doesn't compete with an in-flight query.
+func (a *App) cancelPendingContextUpdate() {
+	a.contextTimerMu.Lock()
+	if a.contextTimer != nil {
+		a.contextTimer.Stop()
+		a.contextTimer = nil
+	}
+	a.contextTimerMu.Unlock()
+}
+
+// scheduleContextUpdate debounces context updates triggered by text changes.
+func (a *App) scheduleContextUpdate(sql string) {
+	a.contextTimerMu.Lock()
+	defer a.contextTimerMu.Unlock()
+	if a.contextTimer != nil {
+		a.contextTimer.Stop()
+	}
+	a.contextTimer = time.AfterFunc(500*time.Millisecond, func() {
+		a.updateQueryContext(sql)
+	})
+}
+
+// updateQueryContext parses the SQL for table references, fetches missing schemas,
+// and builds per-section column completions for context-aware autocomplete.
+func (a *App) updateQueryContext(sql string) {
+	if strings.TrimSpace(sql) == "" {
+		a.editor.SetSectionCompletions(nil)
+		return
+	}
+
+	sections := ui.ParseQuerySections(sql)
+
+	// Collect all unique table refs across all sections.
+	allRefs := make(map[string]ui.TableRef)
+	for _, sec := range sections {
+		for _, ref := range sec.Tables {
+			allRefs[ref.Key()] = ref
+		}
+	}
+
+	if len(allRefs) == 0 {
+		return
+	}
+
+	// Initialize schema cache if needed.
+	if a.tableSchemaCache == nil {
+		a.tableSchemaCache = make(map[string]*bq.TableSchema)
+	}
+
+	// Fetch schemas for uncached tables.
+	var toFetch []ui.TableRef
+	for _, ref := range allRefs {
+		if _, cached := a.tableSchemaCache[ref.Key()]; !cached {
+			toFetch = append(toFetch, ref)
+		}
+	}
+
+	if len(toFetch) > 0 {
+		log.Printf("autocomplete: fetching schemas for %d tables from query", len(toFetch))
+		sem := make(chan struct{}, 5)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ref := range toFetch {
+			ref := ref
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				schema, err := a.bqMgr.GetTableSchema(a.ctx, ref.Project, ref.Dataset, ref.Table)
+				mu.Lock()
+				if err == nil {
+					a.tableSchemaCache[ref.Key()] = schema
+				} else {
+					log.Printf("autocomplete: failed to fetch schema for %s: %v", ref.Key(), err)
+					a.tableSchemaCache[ref.Key()] = nil
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+	}
+
+	// Build section completions from sections + cached schemas.
+	scs := make([]ui.SectionCompletion, len(sections))
+	for i, sec := range sections {
+		seen := make(map[string]bool)
+		var columns []string
+		for _, ref := range sec.Tables {
+			schema := a.tableSchemaCache[ref.Key()]
+			if schema == nil {
+				continue
+			}
+			for _, f := range schema.Fields {
+				upper := strings.ToUpper(f.Name)
+				if !seen[upper] {
+					seen[upper] = true
+					columns = append(columns, f.Name)
+				}
+			}
+		}
+		sort.Strings(columns)
+		scs[i] = ui.SectionCompletion{
+			Start:   sec.Start,
+			End:     sec.End,
+			Columns: columns,
+		}
+	}
+
+	a.editor.SetSectionCompletions(scs)
 }
 
 func (a *App) handleAIMessage(userMsg string) {

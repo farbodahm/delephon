@@ -189,56 +189,110 @@ func (c *Client) GetTableSchema(ctx context.Context, projectID, datasetID, table
 }
 
 func (c *Client) RunQuery(ctx context.Context, projectID, sqlText string) (*QueryResult, error) {
-	cl, err := c.getClient(projectID)
+	result := &QueryResult{}
+	err := c.runQueryInternal(ctx, projectID, sqlText, result, nil, nil)
+	return result, err
+}
+
+// StreamingResult contains query metadata returned by RunQueryStreaming.
+type StreamingResult struct {
+	Columns        []string
+	Duration       time.Duration
+	BytesProcessed int64
+	RowCount       int64
+}
+
+// RunQueryStreaming executes a query and delivers results incrementally.
+// onColumns is called once the schema is known (before any rows).
+// onBatch is called with each batch of rows as they arrive from BigQuery.
+func (c *Client) RunQueryStreaming(ctx context.Context, projectID, sqlText string,
+	onColumns func(columns []string),
+	onBatch func(rows [][]string),
+) (*StreamingResult, error) {
+	sr := &StreamingResult{}
+	qr := &QueryResult{}
+	err := c.runQueryInternal(ctx, projectID, sqlText, qr, onColumns, onBatch)
 	if err != nil {
 		return nil, err
+	}
+	sr.Columns = qr.Columns
+	sr.Duration = qr.Duration
+	sr.BytesProcessed = qr.BytesProcessed
+	sr.RowCount = qr.RowCount
+	return sr, nil
+}
+
+// runQueryInternal is the shared implementation for RunQuery and RunQueryStreaming.
+// When onColumns/onBatch are nil, rows are collected into qr.Rows (batch mode).
+// When non-nil, rows are delivered via callbacks (streaming mode).
+func (c *Client) runQueryInternal(ctx context.Context, projectID, sqlText string,
+	qr *QueryResult,
+	onColumns func([]string),
+	onBatch func([][]string),
+) error {
+	cl, err := c.getClient(projectID)
+	if err != nil {
+		return err
 	}
 
 	start := time.Now()
 	q := cl.Query(sqlText)
 	job, err := q.Run(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("run query: %w", err)
+		return fmt.Errorf("run query: %w", err)
 	}
 
 	status, err := job.Wait(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("wait query: %w", err)
+		return fmt.Errorf("wait query: %w", err)
 	}
 	if status.Err() != nil {
-		return nil, fmt.Errorf("query error: %w", status.Err())
+		return fmt.Errorf("query error: %w", status.Err())
 	}
 
-	dur := time.Since(start)
+	qr.Duration = time.Since(start)
 
 	it, err := job.Read(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read results: %w", err)
+		return fmt.Errorf("read results: %w", err)
 	}
 
-	result := &QueryResult{
-		Duration: dur,
-	}
 	if status.Statistics != nil {
-		result.BytesProcessed = status.Statistics.TotalBytesProcessed
+		qr.BytesProcessed = status.Statistics.TotalBytesProcessed
 	}
 
-	// Extract column names from schema
+	// Extract column names from schema.
 	if it.Schema != nil {
 		for _, f := range it.Schema {
-			result.Columns = append(result.Columns, f.Name)
+			qr.Columns = append(qr.Columns, f.Name)
 		}
 	}
 
-	// Read rows
-	for result.RowCount < maxRows {
+	// Deliver columns immediately so the UI can show headers.
+	if onColumns != nil {
+		onColumns(qr.Columns)
+	}
+
+	// Read rows.
+	const streamBatchSize = 100
+	var batch [][]string
+	if onBatch != nil {
+		batch = make([][]string, 0, streamBatchSize)
+	}
+	firstRow := true
+
+	for qr.RowCount < int64(maxRows) {
 		var row []bigquery.Value
 		err := it.Next(&row)
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read row: %w", err)
+			// Flush any pending batch before returning the error.
+			if onBatch != nil && len(batch) > 0 {
+				onBatch(batch)
+			}
+			return fmt.Errorf("read row: %w", err)
 		}
 		strRow := make([]string, len(row))
 		for i, v := range row {
@@ -248,9 +302,25 @@ func (c *Client) RunQuery(ctx context.Context, projectID, sqlText string) (*Quer
 				strRow[i] = fmt.Sprintf("%v", v)
 			}
 		}
-		result.Rows = append(result.Rows, strRow)
-		result.RowCount++
+		qr.RowCount++
+
+		if onBatch != nil {
+			batch = append(batch, strRow)
+			// Flush immediately on first row for instant feedback, then in batches.
+			if firstRow || len(batch) >= streamBatchSize {
+				onBatch(batch)
+				batch = make([][]string, 0, streamBatchSize)
+				firstRow = false
+			}
+		} else {
+			qr.Rows = append(qr.Rows, strRow)
+		}
 	}
 
-	return result, nil
+	// Flush remaining rows.
+	if onBatch != nil && len(batch) > 0 {
+		onBatch(batch)
+	}
+
+	return nil
 }
