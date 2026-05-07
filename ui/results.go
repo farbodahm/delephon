@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -31,6 +32,10 @@ type Results struct {
 	columns       []string
 	rows          [][]string
 	colCharLimits []int // per-column display char limit based on column width
+
+	// Double-click detection for cell copy.
+	lastTapCell widget.TableCellID
+	lastTapTime time.Time
 
 	Container fyne.CanvasObject
 }
@@ -98,6 +103,27 @@ func NewResults() *Results {
 			txt.Text = ""
 		}
 		txt.Refresh()
+	}
+
+	r.table.OnSelected = func(id widget.TableCellID) {
+		now := time.Now()
+		if id == r.lastTapCell && now.Sub(r.lastTapTime) < 400*time.Millisecond {
+			// Double-tap: copy the full cell value to clipboard.
+			if id.Row < len(r.rows) && id.Col < len(r.rows[id.Row]) {
+				val := r.rows[id.Row][id.Col]
+				if cb := fyne.CurrentApp().Clipboard(); cb != nil {
+					cb.SetContent(val)
+				}
+				col := ""
+				if id.Col < len(r.columns) {
+					col = r.columns[id.Col]
+				}
+				r.statusBar.SetText(fmt.Sprintf("Copied %s (row %d) to clipboard", col, id.Row+1))
+			}
+		}
+		r.lastTapCell = id
+		r.lastTapTime = now
+		r.table.UnselectAll()
 	}
 
 	bottomBar := container.NewHBox(r.statusBar, layout.NewSpacer(), r.copyBtn)
